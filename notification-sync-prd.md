@@ -232,6 +232,8 @@ M0–M2 are the interesting technical risk. M5 is where the product lives or die
 8. **Android 14+ `foregroundServiceType`** — which declared type legitimately covers this service, and does the chosen type survive review? Confirm before M0; it affects the manifest the M0 spike is built on. Note the review also wants a demo video (§9.1), so the answer has a production cost attached, not just a manifest line.
 9. **Product name.** Q1's precedent search surfaced a Play listing called **"Notify Sync: Secure E2E Mirror"** — same category, same end-to-end-encryption pitch, and close enough to "NotifSync" to be confused with it in store search. §1's competitor table predates this and lists only Pushbullet, Join, KDE Connect, and Tasker glue. Decide whether to rename, and refresh §1 against what is actually shipping now rather than against the options considered at v0.1. *Not verified: the listing was seen via search results, not confirmed first-party.*
 
+   **Candidate: `noti-noti`.** Distinctive enough to avoid the store-search collision that motivates this question, which is the main thing being solved for. Before committing, check it against the trademark position and the availability of the matching Play package ID, domain, and store listing name — a name that collides at the package-ID or trademark level is a costlier mistake than one that collides in search results.
+
 ---
 
 ## Revision history

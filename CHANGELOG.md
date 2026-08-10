@@ -2,6 +2,24 @@
 
 ## 2026-08-10
 
+### Verify LICENSE against the canonical Apache-2.0 text
+**Type:** Fixed
+**Files:** `LICENSE`
+**Related:** §12 Q7, resolves the "Not verified" note on "Add Apache-2.0 LICENSE" below
+
+Diffed `LICENSE` against <https://www.apache.org/licenses/LICENSE-2.0.txt>. The only substantive difference was a missing leading blank line, now added. The file is byte-for-byte identical to the canonical text apart from line 190, where the Appendix placeholder `Copyright [yyyy] [name of copyright owner]` is replaced with `Copyright 2026 Zeyune` — which is what the Appendix instructs.
+
+**Why:** the text had been written from memory and never checked. A licence with altered wording is not the licence it claims to be, and the damage surfaces at the point someone relies on it. An exact match also lets automated licence detectors identify it with full confidence.
+
+### Record `noti-noti` as a Q9 name candidate
+**Type:** Changed
+**Files:** `notification-sync-prd.md`
+**Related:** §12 Q9
+
+Added `noti-noti` under Q9 as a candidate product name, with the checks it still needs: trademark position, and availability of the matching Play package ID, domain, and store listing name.
+
+**Why:** Q9 exists because "NotifSync" is close to a shipping app called "Notify Sync: Secure E2E Mirror". `noti-noti` resolves the store-search collision Q9 is actually about, so it belongs in the question rather than in conversation. The package-ID and trademark checks are noted because those collide more expensively than search results do.
+
 ### Correct the LICENSE copyright holder to Zeyune
 **Type:** Fixed
 **Files:** `LICENSE`
