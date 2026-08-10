@@ -2,6 +2,34 @@
 
 ## 2026-08-10
 
+### Export a standalone decision record outside the repository
+**Type:** Added
+**Files:** `../notifsync-decisions-2026-08-10.md`
+**Related:** §12 Q1, Q3, Q7, Q8, Q9, FR-23, LICENSE
+
+Wrote a digest of everything decided on 2026-08-10 to `C:\Users\Effie\Documents\Codes\notifsync-decisions-2026-08-10.md` — outside the repository, at Effie's request. Covers Q1, Q7, Q3, Q8, the Q9 candidate and the licence, each with the decision, its reasoning, what was rejected, and what stayed unverified, plus the M0-onward sequence.
+
+**Why:** the reasoning for the day's decisions is spread across the PRD's §9.1, §9.3, §10, §12 and its revision history, which makes it hard to review as a whole or share without handing over the entire 30 KB document. The digest is readable standalone.
+
+**Note:** the file sits outside the project directory and is therefore not covered by this repository's git history or licence. The PRD and this changelog remain authoritative; the digest will go stale if decisions change and is not maintained as a living document.
+
+## 2026-08-10
+
+### Answer Q8 as specialUse; make the foreground service conditional
+**Type:** Changed
+**Files:** `notification-sync-prd.md`
+**Related:** §10 M5, §12 Q8, FR-23, FR-24, FR-26
+
+Answered Q8: declare `specialUse` if a foreground service ships, never `dataSync`. Rewrote FR-23 — the foreground service is OEM hardening, not what keeps the listener alive — and made it conditional on gaps measured at M5 rather than assumed at M0. Reordered M5 so the 72-hour soak test runs before the service is built. PRD at v0.5.
+
+**Why:** `dataSync` is the type every tutorial recommends for keeping a notification listener alive, and on Android 15+ it is capped at six hours per 24 hours and barred from starting on `BOOT_COMPLETED`. Building on it would have produced a relay that dies silently mid-day — the exact symptom FR-24 identifies as the number one cause of abandonment in this category, engineered in on purpose. `remoteMessaging` avoids the timeout but is documented for text-message continuity between devices, which is not what this app does; `specialUse` is the honest fit and its review cost is a justification string plus the demo video.
+
+**Decided — soak test before foreground service, not after:** FR-23's premise that the service keeps the listener alive was false, so the service may be unnecessary. FR-26's sequence numbers already make dropped notifications visible, meaning M5 can measure whether gaps occur before deciding to build. Rejected keeping the service as an M0 given: it would have baked in a persistent notification, a Play review dependency and a demo video before knowing any were needed, and would have destroyed the measurement by removing the failure it was meant to detect.
+
+**Not verified:** `remoteMessaging` was ruled out by reading its documented scope, not on a known rejection — if review rejects the `specialUse` justification it remains the fallback. Google describes the six-hour cap as "currently" limited to `dataSync` and `mediaProcessing`; that set grew once already, so it needs re-checking at every target-API bump. Nothing has been tested on an OEM device and no submission has been made.
+
+## 2026-08-10
+
 ### Verify LICENSE against the canonical Apache-2.0 text
 **Type:** Fixed
 **Files:** `LICENSE`
