@@ -1,6 +1,6 @@
 # NotifSync — Product Requirements Document
 
-**Status:** Draft v0.3
+**Status:** Draft v0.4
 **Date:** 2026-08-10
 **Owner:** Effie
 **Stack decision:** React Native (Expo, prebuild + local config plugin), single app, dual role: sender + receiver
@@ -174,14 +174,17 @@ This section exists only because of the day-one-product scope decision. Under a 
 
 ### 9.3 Running costs and support
 
-- Relay cost scales with user count and notification volume. Before launch, model the per-1,000-users monthly cost and decide what happens when it exceeds what is fundable. Rate limiting (FR-9) helps; it is not a business model.
+- **The relay is cheap to run by construction, and that is not an accident.** FR-32 deletes ciphertext on acknowledgement, FR-16 delivers via FCM and APNs at no cost, FR-17 keeps sub-4 KB payloads out of storage altogether, and FR-9 caps per-app volume. Marginal cost per user is roughly one function invocation plus a transient row. Per Q7 the app and the hosted relay are both free; there is no paid tier at launch.
+- **The cost risk is abuse, not adoption.** A published per-device fair-use quota is the control, and it must exist before launch — an unmetered open relay is the failure mode, not a large legitimate user base. Decide the quota number at M7 and state it wherever the hosted relay is described.
+- **Do not model this as a business.** Q7 settled that revenue is not a goal. If hosted cost ever exceeds what is comfortable to absorb, the levers in order are: tighten the quota, then push heavy users to self-host (Q3, free and full-featured), then introduce a store-managed paid tier. Only the third needs new code, and §12 Q7 records why it does not breach §2's accountless rule.
 - FR-24 (OEM battery killers) is the predicted support burden. FR-33 exists to absorb it. Budget for a public FAQ covering the top five OEMs at minimum.
 - No analytics (FR-30) means user-reported problems are the only signal. Provide a support channel and read it.
 
 ## 10. Milestones
 
-0. **M-1 — Compliance gate.** Resolve §12 Q1 (Play policy — *answered on the written-policy half, 2026-08-10*) and Q7 (licensing/pricing — **still open, still blocking**). Obtain the Apple Developer Program membership. Confirm Q8 (`foregroundServiceType`) before M0, since it shapes the manifest the spike is built on.
-   *The original "no code until Q1 is answered" rule was written when Q1 might have returned "this category is not permitted" — an answer that would have invalidated the distribution model rather than a feature. It cannot return that any more: there is no use-case whitelist to be excluded from, and comparable apps ship. What remains of Q1 is per-submission review risk, which is not resolvable in advance and therefore cannot gate code. **Q7 still gates**, because it determines whether §9.3's running-cost model has an answer at all.*
+0. **M-1 — Compliance gate. Cleared 2026-08-10.** §12 Q1 (Play policy) is answered on the written-policy half; Q7 (licensing and pricing) is answered as Apache-2.0, free, free hosted relay; Q3 (self-host) is answered as a consequence. **Nothing now blocks M0.**
+   Two items carry forward rather than gate: the **Apple Developer Program membership** ($99/year, §9.2) is required before M3 can complete, not before M0 can start; and **Q8** (`foregroundServiceType`) must be confirmed before M0 finishes, since it shapes the manifest the spike is built on.
+   *The original "no code until Q1 is answered" rule was written when Q1 might have returned "this category is not permitted" — an answer that would have invalidated the distribution model rather than a feature. It cannot return that any more: there is no use-case whitelist to be excluded from, and comparable apps ship. What remains of Q1 is per-submission review risk, which is not resolvable in advance and therefore cannot gate code.*
 1. **M0 — Spike.** Expo prebuild app + Kotlin notification listener printing captured notifications to a local list. No network. Proves the hard part works.
 2. **M1 — LAN loop.** Two devices, direct connection over local network, notifications appear on device B. No encryption, no filtering. Proves the end-to-end shape. *Timebox this: it validates the data shape, then gets thrown away at M3.*
 3. **M2 — Pairing + crypto.** QR pairing, key exchange, AEAD payloads, sequence numbers (FR-26).
@@ -191,7 +194,7 @@ This section exists only because of the day-one-product scope decision. Under a 
 7. **M6 — Polish.** History, quiet hours, per-device mute, settings.
 8. **M7 — Release readiness.** Privacy policy, Data Safety declaration, prominent disclosure (FR-28), store listings, FAQ, support channel, external pairing test with five non-technical users (success criterion 5).
 
-M0–M2 are the interesting technical risk. M5 is where the product lives or dies day to day. **M-1 is where the project lives or dies at all** — and it is the one milestone with no code in it, which is exactly why it is the one most likely to get skipped.
+M0–M2 are the interesting technical risk. M5 is where the product lives or dies day to day. M-1 was written as the milestone the project lived or died at, and as the one most likely to get skipped because it contained no code; it was neither, in the end — it took a day, and the question it was built around turned out to rest on a false premise. **The remaining risk is now entirely technical and moves to M0.**
 
 ## 11. Deferred to v2
 
@@ -213,17 +216,36 @@ M0–M2 are the interesting technical risk. M5 is where the product lives or die
 
    **Not verified:** the comparable listings were observed via search results, not confirmed first-party — Play listing pages do not render to automated fetching. A developer-community thread on this exact policy question could not be read. Neither changes the documentation finding, which came from Play's own policy pages.
 2. **Crypto library** — which RN crypto library is currently maintained, gives AEAD without a native fork, and can be called from a Swift Notification Service Extension as well as from JS? The extension requirement (FR-35) narrows the field and was not a constraint in v0.1. Needs research; the RN crypto ecosystem churns.
-3. **Self-host or hosted relay?** Self-hosting is truer to the privacy goal but means anyone else using it needs to run a server. Leaning: hosted by default, self-host URL configurable in settings. Cheap either way given §8's replaceable-backend design — but the decision interacts with Q7.
+3. **Self-host or hosted relay?** **Answered 2026-08-10 as a consequence of Q7:** both. Hosted by default and free under a fair-use quota, with a self-host URL configurable in settings and no feature difference between them. Self-host-only was rejected because success criterion 5 requires a non-technical user to pair unaided, and that user cannot run a server. Cheap either way given §8's replaceable-backend design.
 4. **iOS push reliability** — APNs deprioritizes high-volume pushes to a single device. FR-35 avoids the worst of it (background-fetch throttling) but does not make alert pushes unlimited. Needs a real-world sustained-load test at M3 before committing to the iOS receiver as a headline feature.
 5. **Does the notification icon survive the trip?** Forwarding app icons means shipping image data through the relay, and pushes past the 4 KB limit into FR-17's fetch path far more often. Probably: app *name* only in v1, icon in v2.
 6. **What happens when phone 2 is offline?** Queue on the sender and deliver late, or drop? Late "stamina full" is worse than no notification. Probably: per-app TTL, defaulting to 15 minutes for game notifications.
-7. **Licensing and pricing.** §1 positions against Join partly on "paid, closed source". Shipping NotifSync as paid and closed would forfeit that argument; shipping it free with a hosted relay creates an unfunded running cost (§9.3). Open source + free app + optional paid hosted relay is the obvious shape, but it is a real decision with no default. **Blocking for M-1** because it determines whether §9.3's cost model has an answer.
+7. **Licensing and pricing.** **Answered 2026-08-10. No longer blocking.**
+
+   **Licence: Apache-2.0.** Permissive, App Store compatible, and carries an explicit patent grant. **GPL-3.0 was rejected on a hard constraint, not a preference:** GPLv3 forbids downstream parties imposing further restrictions, Apple's App Store terms impose exactly those, and the two are treated as incompatible in practice. Choosing it would have cost the iOS receiver — which is phone 1, the device the user actually looks at — so copyleft would have traded away the product's whole point. MPL-2.0 was the runner-up if a closed fork ever becomes a real concern; it is App Store compatible and file-level copyleft, so switching later is possible for new files but not retroactive.
+
+   **Pricing: free, both stores, with a free hosted relay under a published fair-use quota.** No paid tier at launch. Self-hosting stays available and free (Q3). Revisit only against real cost data.
+
+   **Rationale — the funding problem was smaller than v0.2 assumed.** §9.3 treated hosted-relay cost as an open financial risk needing a business model. The architecture had already solved it: FR-32 deletes ciphertext on acknowledgement, FR-16 delivers over FCM and APNs which cost nothing, FR-17 keeps most payloads out of storage entirely, and FR-9 caps volume per app. Marginal cost per user is approximately one function invocation plus a row that deletes itself. The exposure is abuse and traffic spikes, not legitimate use — and a quota addresses that where a price does not.
+
+   **Note for any future paid tier: §2's accountless rule survives it.** Play Billing and StoreKit hold the payment identity, so a store-managed purchase never requires NotifSync to know who anyone is. What that mechanism cannot do is bill self-hosters or accept payment outside the stores. Any revenue design that needs either of those collides with §2 and should be treated as a change to §2, not an addition to §9.3.
 8. **Android 14+ `foregroundServiceType`** — which declared type legitimately covers this service, and does the chosen type survive review? Confirm before M0; it affects the manifest the M0 spike is built on. Note the review also wants a demo video (§9.1), so the answer has a production cost attached, not just a manifest line.
 9. **Product name.** Q1's precedent search surfaced a Play listing called **"Notify Sync: Secure E2E Mirror"** — same category, same end-to-end-encryption pitch, and close enough to "NotifSync" to be confused with it in store search. §1's competitor table predates this and lists only Pushbullet, Join, KDE Connect, and Tasker glue. Decide whether to rename, and refresh §1 against what is actually shipping now rather than against the options considered at v0.1. *Not verified: the listing was seen via search results, not confirmed first-party.*
 
 ---
 
 ## Revision history
+
+### v0.4 — 2026-08-10
+**Type:** Decided
+
+Answered Q7: **Apache-2.0, free on both stores, free hosted relay under a published fair-use quota, no paid tier at launch.** Q3 follows from it — hosted by default and self-host both supported, free, feature-identical. Rewrote §9.3, which had framed running cost as an unfunded risk needing a business model. **M-1 is cleared; nothing blocks M0.**
+
+**Why:** two premises in v0.2 were wrong. First, §9.3 assumed hosted-relay cost was a live financial risk, but FR-32 (delete on ack), FR-16 (FCM/APNs are free), FR-17 (small payloads skip storage) and FR-9 (volume cap) had already reduced marginal cost to about one function invocation per notification. The exposure is abuse, not adoption, and a quota answers that where a price does not. Second, Q7 presented licence and price as one coupled decision with "open source + optional paid relay" as the obvious shape; the licence half was in fact constrained to near-determinacy by something Q7 never mentioned — GPLv3 is incompatible with App Store distribution in practice, so any copyleft choice would have cost the iOS receiver, which is the device this product exists to reach.
+
+Recorded one constraint for the future: §2's accountless rule does **not** forbid a later paid tier, because Play Billing and StoreKit hold the payment identity instead of NotifSync. It does forbid billing self-hosters or taking payment outside the stores. Any revenue design needing those is a change to §2, not an addition to §9.3.
+
+**Not verified:** the GPLv3/App Store incompatibility is long-established practice and Apple has never published a licence-specific rule, so it rests on the consistent experience of projects that hit it rather than on a citable clause. Apache-2.0 avoids the question entirely. No legal advice was taken, and no `LICENSE` file has been added to the repository yet.
 
 ### v0.3 — 2026-08-10
 **Type:** Changed
