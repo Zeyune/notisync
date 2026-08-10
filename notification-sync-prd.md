@@ -1,0 +1,249 @@
+# NotifSync — Product Requirements Document
+
+**Status:** Draft v0.3
+**Date:** 2026-08-10
+**Owner:** Effie
+**Stack decision:** React Native (Expo, prebuild + local config plugin), single app, dual role: sender + receiver
+**Scope decision:** Public product from day one — not a personal tool that might ship later. See §9.
+
+> **FR numbering is permanent.** New requirements take the next free number regardless of where
+> they sit in the document. FR-1…FR-25 keep the meaning they had in v0.1. Never renumber.
+
+---
+
+## 1. Problem
+
+I run two phones. Phone 1 holds my social media and is the phone I actually look at. Phone 2 is my gaming phone and mostly sits face-down on the desk. Every notification phone 2 produces — stamina recharged, raid starting, event ending, daily reset — is invisible to me unless I physically pick it up.
+
+Existing options each fail in a specific way:
+
+| Option | Why it doesn't work |
+|---|---|
+| Pushbullet | Mirroring is Android→Android/desktop only. Its iOS app receives pushes but cannot display mirrored notifications properly. No end-to-end encryption. |
+| Join | Works, but paid, closed source, and the notification payload passes through a third party in the clear. |
+| KDE Connect | LAN-only. Useless the moment the two phones are on different networks. |
+| MacroDroid/Tasker + ntfy | Works, but it's a pile of glue. No per-app UI, no pairing model, no history, breaks whenever an OEM kills the automation app. |
+
+**The gap:** a purpose-built, cross-platform, end-to-end encrypted notification relay between *my own* devices, with real per-app filtering and a receiver that works on iOS.
+
+## 2. Users
+
+- **Primary:** dual-phone users where one device is the "attention" device and the other is a background device generating time-sensitive alerts. Gaming phone + daily phone; work phone + personal phone; phone + tablet.
+- **The owner is user zero, not the only user.** Every requirement below must hold for someone who has never seen the codebase and will not read documentation.
+
+Not building for teams, families, or shared devices. One human, multiple devices they own.
+
+**Accountless by design.** There is no sign-up, no email, no password. Identity is the device keypair; pairing is device-to-device. This is a deliberate differentiator against Pushbullet and Join, and it is also the reason §6.1's no-recovery rule (FR-27) is acceptable rather than negligent.
+
+## 3. The hard platform constraint (read this before anything else)
+
+This is the single fact the whole product is shaped around:
+
+- **Android can send.** `NotificationListenerService` lets an app read every notification posted on the device. This is the mechanism the entire product depends on.
+- **iOS cannot send.** iOS gives third-party apps no API to read other apps' notifications. Full stop. There is no entitlement, no workaround, no jailbreak-free path.
+- **Both can receive.** Displaying an incoming push is normal, supported behaviour on both platforms.
+
+**Therefore:** the sender role is Android-only and always will be. The iOS build ships as receiver-only, and the UI must say so plainly rather than hiding a greyed-out toggle. Since phone 2 (gaming) is the sender in my own case, this is fine — but it must be stated in the App Store listing's first paragraph, not the fine print, so iOS users don't install it expecting mirroring *from* their iPhone. Expect one-star reviews on this exact misunderstanding regardless; the listing copy is damage control, not prevention.
+
+## 4. Goals
+
+- Forward selected notifications from an Android device to one or more paired devices, within ~5 seconds, whether or not both devices are on the same network.
+- Work when the receiving app is closed or the phone is locked — i.e. real OS-level push, not an in-app feed.
+- Never let notification content be readable by the relay server or by me-as-operator. End-to-end encrypted payloads.
+- Per-app filtering that takes under a minute to configure, because a gaming phone forwarding *everything* is unusable within a day.
+- Survive Android's battery optimizer for weeks without silently dying.
+- Be diagnosable by a non-technical user without contacting support.
+
+### Non-goals (v1)
+
+- iOS as a sender. Impossible; see §3.
+- SMS/call mirroring, file transfer, clipboard sync, remote screen. That's AirDroid's job.
+- Acting on a notification remotely (reply, dismiss-on-both). Deferred to v2 — see §12.
+- Multi-user accounts, sharing notifications with another person, web dashboard.
+- Desktop clients.
+- Localization beyond English.
+
+## 5. Success criteria
+
+- p95 delivery latency, sender-post to receiver-display: **under 5 seconds**.
+- **Zero unreported gaps** across a 72-hour soak test on a battery-optimized Android device with the screen off. "Unreported" is the operative word: FR-26's sequence numbers mean a dropped notification is *detected*. A gap that the receiver flags is a bug to fix; a gap nobody noticed is a failure of the measurement itself.
+- Filter setup for a new game app: **under 30 seconds** from notification arriving to rule created.
+- Server can be fully compromised without any notification **text** being exposed. Metadata is a stated exception — see §7.
+- **A new user completes pairing and receives their first forwarded notification without external help**, measured on at least five people who did not build this.
+
+## 6. Functional requirements
+
+### 6.1 Pairing
+
+- **FR-1** — A device generates a pairing QR code containing: device ID, public key, and a short-lived pairing token.
+- **FR-2** — The other device scans it, and the two complete a key exchange so both hold a shared symmetric key. Manual code entry is available as a fallback when the camera is unusable.
+- **FR-3** — The shared key is stored in Android Keystore / iOS Keychain. It never touches the server.
+- **FR-4** — A device list screen shows paired devices, their role (sender/receiver/both), last-seen time, and an unpair action. Unpairing revokes the key on both sides.
+- **FR-27** — **There is no key recovery.** Reinstalling the app, factory-resetting, or losing a device destroys that device's keys permanently; the remaining device must re-pair. The unpair screen and the onboarding flow both state this in plain language. A server-side device record with no live pairing is deleted after 30 days.
+  *Rationale: key escrow would give the server the ability to decrypt, which contradicts §4. Re-pairing takes 20 seconds. This is a non-feature, stated so it doesn't arrive later as a bug report.*
+
+### 6.2 Capture (Android sender)
+
+- **FR-5** — On first run, the app explains why it needs notification access, then deep-links to the system *Notification access* screen. This permission cannot be granted from a normal runtime dialog — it is a special-access grant, and the app must handle the user backing out without granting it.
+- **FR-6** — The listener captures package name, app label, title, body, timestamp, app icon, and whether the notification is ongoing/silent.
+- **FR-7** — Ongoing notifications (media players, "app is running", foreground service notices) are excluded by default. They update constantly and would flood the relay.
+- **FR-8** — Duplicate suppression: identical `(package, title, body)` within a configurable window (default 60s) forwards once. Games that re-post the same "stamina full" notice on every tick must not spam.
+- **FR-9** — A rate limit per source app (default 10/minute) with a visible "N notifications suppressed" summary rather than silent dropping.
+
+### 6.3 Filtering
+
+- **FR-10** — Per-app allowlist, defaulting to **deny**. Nothing forwards until an app is opted in. This is the opposite of Pushbullet's default and is deliberate.
+- **FR-11** — A "recent notifications" screen listing apps that have posted recently, each with a one-tap *Forward this app* toggle. This is how FR-10's setup stays under 30 seconds.
+- **FR-12** — Optional keyword rules per app: forward only if title/body matches (or does not match) given text. For a game that posts both "stamina full" and "shop refreshed" when only the first matters.
+- **FR-13** — Quiet hours: a time window during which notifications are queued and delivered as a single digest at the end, or dropped entirely (configurable per app).
+- **FR-14** — Rules are stored locally on the sender. Not synced, not on the server.
+
+### 6.4 Delivery
+
+- **FR-15** — Payload is encrypted on the sender before it leaves the device. The relay sees ciphertext, a target device token, and a size — nothing else.
+- **FR-16** — Delivery is via platform push (FCM for Android, APNs for iOS) so the receiver is woken even when the app is killed.
+- **FR-17** — If the payload exceeds the push size limit (~4 KB on both FCM and APNs), the push carries only a fetch handle; the receiver pulls the ciphertext over HTTPS and decrypts locally. On iOS this fetch happens inside the Notification Service Extension (FR-35), *not* via background fetch.
+- **FR-18** — On send failure, retry with exponential backoff. Undelivered notifications older than 24 hours are dropped, and the sender shows a "delivery is failing" banner rather than failing silently.
+- **FR-26** — Every forwarded notification carries a **monotonic sequence number per (sender, receiver) pair**. The receiver tracks the highest sequence seen and detects gaps. A gap older than the retry window surfaces as a visible "3 notifications did not arrive" entry in history, and increments a counter on the diagnostics screen (FR-33).
+  *Rationale: without this, success criterion 2 is unmeasurable — a dropped notification leaves no trace by definition, so a soak test could only ever conclude "seems fine".*
+- **FR-32** — **Data retention at the relay:** ciphertext is deleted on delivery acknowledgement, or after 24 hours, whichever comes first. Operational logs record no payload metadata beyond device ID and timestamp, and are deleted after 7 days. Both figures are stated in the privacy policy and must match the Play Data Safety declaration.
+
+### 6.5 Receiver
+
+- **FR-19** — Incoming notifications display as native OS notifications, showing the source app name and the originating device ("Phone 2 · Honkai").
+- **FR-20** — Grouping by source device so the shade doesn't interleave two phones' worth of alerts.
+- **FR-21** — An in-app history list of received notifications, stored locally, with a retention setting (default 7 days) and a clear-all.
+- **FR-22** — Per-device mute from the receiver side, so the gaming phone can be silenced without touching it.
+- **FR-31** — On Android 13+ (API 33), the receiving device requests the `POST_NOTIFICATIONS` runtime permission during onboarding. Without it the receiver installs and pairs successfully but displays nothing — a silent failure mode that must be caught at setup, not discovered at 2am.
+- **FR-35** — **iOS decryption happens in a Notification Service Extension**, triggered by `mutable-content: 1`. The extension decrypts the payload (fetching first if FR-17 applies) and rewrites the notification body before display. The shared key lives in a Keychain **access group** shared between the app and the extension.
+  *Rationale — this is architectural, not an implementation detail: iOS aggressively throttles `content-available` background pushes to roughly a handful per hour, which would make a naive "silent push wakes the app to decrypt" design fail exactly when a gaming phone is chatty. A Service Extension on a user-visible alert push is not subject to that throttle. Getting this wrong is discovered at M3 and costs a redesign.*
+
+### 6.6 Reliability
+
+- **FR-23** — The sender runs a foreground service with a persistent (minimal-priority) notification, which is what keeps the listener alive. On Android 14+ the service must declare an appropriate `foregroundServiceType` in the manifest and justify it at review; confirm which type applies before M0 (see §12 Q8).
+- **FR-24** — Onboarding includes a battery-optimization exemption request and, on known-aggressive OEMs (Xiaomi, Oppo, Vivo, Samsung, Huawei), a deep link to that vendor's autostart/protected-apps screen with instructions. **This is the number one cause of "it worked for a week then stopped" in every competing app and deserves real design effort, not a footnote.** As a public product it is also the number one predicted support-ticket driver.
+- **FR-25** — A heartbeat from sender to receiver. If the receiver hasn't heard from a paired sender in N hours, it raises a "phone 2 may have stopped forwarding" alert. Silent failure is the worst outcome for this product — a false alarm beats a missed raid.
+- **FR-33** — A **diagnostics screen** answering "why isn't it working?" without a support ticket: notification access granted (y/n), battery exemption granted (y/n), OEM autostart step completed (y/n/unknown), push token registered (y/n), last successful delivery, last heartbeat, gap count from FR-26, and a copy-to-clipboard summary containing **no notification content**. Reachable from the main screen in one tap, not buried in settings.
+
+### 6.7 Privacy & telemetry
+
+- **FR-29** — A privacy policy is linked from onboarding, from settings, and from both store listings. It states plainly: notification content is end-to-end encrypted and unreadable by the operator; metadata is not.
+- **FR-30** — **No third-party analytics or crash-reporting SDKs.** Shipping Firebase Analytics or Sentry inside a product whose entire pitch is "we cannot read your notifications" is self-defeating, and every such SDK is a Data Safety disclosure. Crash diagnostics are local and exported only when the user explicitly taps share in FR-33.
+  *This forecloses knowing the real-world crash rate. Accepted, and the reason FR-33 must be good.*
+- **FR-28** — **Prominent in-app disclosure** shown *before* the notification-access grant, in the app's own UI, stating what data is accessed, why, and where it goes. This is a Play policy requirement for sensitive permissions and a review-rejection risk if handled casually — it cannot be the same screen as FR-5's explainer if that screen doubles as marketing copy.
+
+## 7. Data model (sketch)
+
+| Entity | Fields | Where it lives |
+|---|---|---|
+| `Device` | id, label, platform, role, pushToken, publicKey, lastSeenAt | Server (no notification content) |
+| `Pairing` | deviceA, deviceB, createdAt | Server stores the link; the shared key is on-device only |
+| `Rule` | packageName, enabled, keywordInclude, keywordExclude, quietHours | Sender device only |
+| `ForwardedNotification` | id, seq, sourceApp, title, body, timestamp, deviceLabel | Receiver device only (decrypted); server holds ciphertext transiently per FR-32 |
+
+The server's job is deliberately tiny: hold device tokens, relay opaque blobs, forget them once delivered.
+
+**Stated metadata exposure.** The relay cannot read notification text, but it *can* observe: device labels, push tokens, payload sizes, and the timing and volume of every forwarded notification. That is enough to infer when a user's gaming phone is active and roughly how busy it is. This is an accepted limit of the design, not an oversight, and §6.7's privacy policy must say so rather than claiming a stronger property than the architecture delivers.
+
+## 8. Technical approach
+
+- **App:** React Native via **Expo with prebuild and a local config plugin** — not Expo Go, which cannot load the custom native module. Expo is chosen for build tooling and OTA-free release management; the config plugin injects the Android manifest entries for `NotificationListenerService` and the foreground service type. *This decision blocks M0: choosing bare RN later means rebuilding the scaffold.*
+- **Native module (Android, Kotlin):** wraps `NotificationListenerService` and bridges captured notifications into JS. This is the only substantial native code on Android.
+- **Native extension (iOS, Swift):** Notification Service Extension per FR-35, sharing a Keychain access group with the main app. Small, but it is native code, and it means the iOS build is not pure JS either.
+- **Display:** Notifee for rich local notification presentation on both platforms; `@react-native-firebase/messaging` for FCM/APNs token handling and receipt.
+- **Relay:** a thin backend whose only endpoints are register-device, send-blob, fetch-blob, and ack. Supabase (Edge Functions + Postgres) is the obvious candidate given it's already on this machine, but any small service works — the design deliberately makes the backend replaceable, which is also what makes §12's self-host question (Q3) cheap to answer either way.
+- **Crypto:** shared symmetric key established at pairing; **authenticated encryption (AEAD) with a per-message nonce, and a separate key per direction** so the two devices can never collide on a nonce. Library choice not yet made — see §12 Q2.
+
+## 9. Distribution, compliance & operations
+
+This section exists only because of the day-one-product scope decision. Under a personal-use scope, all of it is deleted and M0 starts immediately.
+
+### 9.1 Android / Google Play
+
+- **Notification access is not a *declared* restricted permission.** As of 2026-08-10, Play's *Permissions and APIs that Access Sensitive Information* policy enumerates SMS/Call Log, Location, Photo and Video, All Files Access, Package Visibility, Accessibility, Request Install Packages, Body Sensors, Health Connect, VPN Service, Exact Alarm, Full-Screen Intent, and Age Signals — **notification access is absent from that list**. There is no declaration form and no permitted-use-case whitelist of the kind SMS/Call Log apps must fit into. See §12 Q1.
+- **What does apply** is the general rule: a sensitive permission must be necessary for core functionality *as promoted in the Play listing*, and limited to user-consented purposes. For NotifSync the listing must therefore describe notification forwarding as the headline feature, not a side capability — which it would anyway. Prominent in-app disclosure (FR-28) and a privacy policy (FR-29) remain required.
+- **Residual risk is the Device and Network Abuse policy**, which prohibits "apps that circumvent Android sandbox protections in order to derive user activity or user identity from other apps". NotifSync circumvents nothing — `NotificationListenerService` is a supported API behind an explicit special-access grant — but this is the clause a reviewer reaches for if they decide against the category, and it has no notification-specific carve-out either way.
+- A **Data Safety** declaration is required and must match FR-30 and FR-32 exactly. A mismatch is a takedown risk, not a warning.
+- Android 14+ `foregroundServiceType` justification (FR-23) is reviewed, and the review requires a **demo video** showing the user-initiated, perceptible action the service supports — not just a manifest entry and a text justification. Budget for producing one at M7. See §12 Q8.
+- **Target API level:** all apps must meet Play's latest target API requirement by **2026-08-31**. Any scaffold built now should target it from the start rather than migrating later.
+
+### 9.2 iOS / App Store
+
+- **The Apple Developer Program is a hard prerequisite: $99/year.** Push notifications are not available under free provisioning, and free-provisioned builds expire after 7 days. There is no way to test the iOS receiver — let alone ship it — without a paid account. This is a fixed cost before M3 can complete, and v0.1 did not list it.
+- Review risk: an app whose iOS build cannot perform its headline function needs its receiver-only nature to be unmistakable in the listing (§3) and in the app itself, or it reads as misleading.
+
+### 9.3 Running costs and support
+
+- Relay cost scales with user count and notification volume. Before launch, model the per-1,000-users monthly cost and decide what happens when it exceeds what is fundable. Rate limiting (FR-9) helps; it is not a business model.
+- FR-24 (OEM battery killers) is the predicted support burden. FR-33 exists to absorb it. Budget for a public FAQ covering the top five OEMs at minimum.
+- No analytics (FR-30) means user-reported problems are the only signal. Provide a support channel and read it.
+
+## 10. Milestones
+
+0. **M-1 — Compliance gate.** Resolve §12 Q1 (Play policy — *answered on the written-policy half, 2026-08-10*) and Q7 (licensing/pricing — **still open, still blocking**). Obtain the Apple Developer Program membership. Confirm Q8 (`foregroundServiceType`) before M0, since it shapes the manifest the spike is built on.
+   *The original "no code until Q1 is answered" rule was written when Q1 might have returned "this category is not permitted" — an answer that would have invalidated the distribution model rather than a feature. It cannot return that any more: there is no use-case whitelist to be excluded from, and comparable apps ship. What remains of Q1 is per-submission review risk, which is not resolvable in advance and therefore cannot gate code. **Q7 still gates**, because it determines whether §9.3's running-cost model has an answer at all.*
+1. **M0 — Spike.** Expo prebuild app + Kotlin notification listener printing captured notifications to a local list. No network. Proves the hard part works.
+2. **M1 — LAN loop.** Two devices, direct connection over local network, notifications appear on device B. No encryption, no filtering. Proves the end-to-end shape. *Timebox this: it validates the data shape, then gets thrown away at M3.*
+3. **M2 — Pairing + crypto.** QR pairing, key exchange, AEAD payloads, sequence numbers (FR-26).
+4. **M3 — Relay.** Backend + FCM/APNs, so it works off-network and with the app killed. iOS receiver with Notification Service Extension (FR-35) working. **Validate APNs behaviour under sustained load here** — Q4 below.
+5. **M4 — Filtering.** Allowlist, recent-apps screen, keyword rules, dedupe.
+6. **M5 — Reliability hardening.** Foreground service, battery exemption onboarding, OEM deep links, heartbeat, diagnostics screen (FR-33), 72-hour soak test measured via FR-26.
+7. **M6 — Polish.** History, quiet hours, per-device mute, settings.
+8. **M7 — Release readiness.** Privacy policy, Data Safety declaration, prominent disclosure (FR-28), store listings, FAQ, support channel, external pairing test with five non-technical users (success criterion 5).
+
+M0–M2 are the interesting technical risk. M5 is where the product lives or dies day to day. **M-1 is where the project lives or dies at all** — and it is the one milestone with no code in it, which is exactly why it is the one most likely to get skipped.
+
+## 11. Deferred to v2
+
+- **Remote dismiss/reply.** `NotificationListenerService` can cancel notifications and `RemoteInput` can send replies, so acting from phone 1 on a phone 2 notification is technically possible. Out of v1 because it doubles the security surface and needs a bidirectional channel.
+- Desktop receiver (Electron or web push).
+- More than two devices, with routing rules per pair.
+- Notification action buttons forwarded and invocable remotely.
+- Localization.
+
+## 12. Open questions
+
+1. **Play Store policy** — is this use case permitted for `NotificationListenerService`, and what does review require? See §9.1. **Answered on the written-policy half; the review-practice half stays open. Downgraded from blocking.**
+
+   **Answered (2026-08-10, from current policy documentation):** there is no declaration form and no permitted-use-case whitelist for notification access — it is not among the restricted permissions Play enumerates. The app ships under the general "necessary for core functionality as promoted in your listing" rule, plus prominent disclosure (FR-28) and a privacy policy (FR-29). The original premise of this question — that NotifSync had to fit itself into an approved-use-case list, and might not — was **wrong**, and it was the basis for the sideload/F-Droid contingency. That contingency is no longer the expected outcome.
+
+   **Precedent:** notification-mirroring apps are live on Play with 2026 updates, including at least one selling end-to-end encrypted mirroring in the same shape as this product. The category is not de facto banned.
+
+   **Still open:** whether *this* submission clears *this* reviewer. Documentation states the rule; it cannot predict enforcement, and the Device and Network Abuse sandbox clause (§9.1) is available to a reviewer who decides against the category. Reduce that exposure at M7 by making forwarding the listing's first line, keeping FR-28's disclosure separate from marketing copy, and matching Data Safety to FR-30/FR-32 exactly.
+
+   **Not verified:** the comparable listings were observed via search results, not confirmed first-party — Play listing pages do not render to automated fetching. A developer-community thread on this exact policy question could not be read. Neither changes the documentation finding, which came from Play's own policy pages.
+2. **Crypto library** — which RN crypto library is currently maintained, gives AEAD without a native fork, and can be called from a Swift Notification Service Extension as well as from JS? The extension requirement (FR-35) narrows the field and was not a constraint in v0.1. Needs research; the RN crypto ecosystem churns.
+3. **Self-host or hosted relay?** Self-hosting is truer to the privacy goal but means anyone else using it needs to run a server. Leaning: hosted by default, self-host URL configurable in settings. Cheap either way given §8's replaceable-backend design — but the decision interacts with Q7.
+4. **iOS push reliability** — APNs deprioritizes high-volume pushes to a single device. FR-35 avoids the worst of it (background-fetch throttling) but does not make alert pushes unlimited. Needs a real-world sustained-load test at M3 before committing to the iOS receiver as a headline feature.
+5. **Does the notification icon survive the trip?** Forwarding app icons means shipping image data through the relay, and pushes past the 4 KB limit into FR-17's fetch path far more often. Probably: app *name* only in v1, icon in v2.
+6. **What happens when phone 2 is offline?** Queue on the sender and deliver late, or drop? Late "stamina full" is worse than no notification. Probably: per-app TTL, defaulting to 15 minutes for game notifications.
+7. **Licensing and pricing.** §1 positions against Join partly on "paid, closed source". Shipping NotifSync as paid and closed would forfeit that argument; shipping it free with a hosted relay creates an unfunded running cost (§9.3). Open source + free app + optional paid hosted relay is the obvious shape, but it is a real decision with no default. **Blocking for M-1** because it determines whether §9.3's cost model has an answer.
+8. **Android 14+ `foregroundServiceType`** — which declared type legitimately covers this service, and does the chosen type survive review? Confirm before M0; it affects the manifest the M0 spike is built on. Note the review also wants a demo video (§9.1), so the answer has a production cost attached, not just a manifest line.
+9. **Product name.** Q1's precedent search surfaced a Play listing called **"Notify Sync: Secure E2E Mirror"** — same category, same end-to-end-encryption pitch, and close enough to "NotifSync" to be confused with it in store search. §1's competitor table predates this and lists only Pushbullet, Join, KDE Connect, and Tasker glue. Decide whether to rename, and refresh §1 against what is actually shipping now rather than against the options considered at v0.1. *Not verified: the listing was seen via search results, not confirmed first-party.*
+
+---
+
+## Revision history
+
+### v0.3 — 2026-08-10
+**Type:** Changed
+
+Answered the written-policy half of Q1 and rewrote §9.1 on the strength of it. Notification access is **not** among the restricted permissions Play enumerates: there is no declaration form and no permitted-use-case whitelist. §9.1's opening claim — "Play requires a declared, permitted use case" — was wrong and is replaced. The residual policy exposure is named instead: the Device and Network Abuse clause on circumventing sandbox protections to derive user activity from other apps. Added the Android 14+ FGS **demo video** requirement and the 2026-08-31 target-API deadline to §9.1. Downgraded Q1 from blocking and rewrote M-1's no-code rule accordingly; **Q7 still gates M-1**. Added Q9 (product name — a same-category "Notify Sync: Secure E2E Mirror" is on Play). Fixed four cross-references that pointed at §11 ("Deferred to v2") when they meant §12 ("Open questions"), including M-1's own.
+
+**Why:** Q1 was the one question that could have invalidated the distribution model, and its blocking status was justified by a premise that turns out not to hold — the app was never at risk of failing to fit an approved-use-case list, because no such list governs notification access. Leaving M-1's "no code" rule standing on a dissolved premise would have stalled the project on a question that can no longer return the answer it was guarding against. What is left of Q1 is per-submission reviewer discretion, which no amount of pre-work resolves, so it cannot sensibly gate a spike.
+
+**Not verified:** the comparable Play listings, including the Q9 name collision, were observed via search results only — Play listing pages do not render to automated fetching and AppBrain refused the request. A Play developer-community thread on this exact policy question could not be read. The policy findings themselves come from Play Console Help pages read directly. Nothing here was confirmed with Google, and no submission has been attempted.
+
+### v0.2 — 2026-08-10
+**Type:** Changed
+
+Scope decided as public product from day one (§9 added in consequence). Five gaps from review closed: iOS receiver's Apple Developer Program prerequisite (§9.2); unmeasurable soak-test criterion fixed via sequence numbers (FR-26); metadata-exposure claim in §5 reconciled with §7's data model; Expo-vs-bare-RN decided as Expo prebuild + config plugin (§8, blocking M0); key recovery stated as an explicit non-feature (FR-27). Added FR-28–FR-35 covering prominent disclosure, privacy policy, no-analytics, data retention, Android 13 `POST_NOTIFICATIONS`, and diagnostics. Added M-1 compliance gate and M7 release readiness. Added Q7 (licensing/pricing) and Q8 (`foregroundServiceType`).
+
+**Why:** v0.1 was written as a personal tool and reviewed as one. As a shipped product, three of its assumptions were load-bearing and wrong — that the iOS receiver needed only code, that "zero missed notifications" could be observed, and that the runtime stack was an implementation detail rather than an M0 prerequisite. The largest single change is FR-35: iOS throttles `content-available` background pushes to a few per hour, so the implied "silent push wakes the app to decrypt" design would have failed under exactly the chatty-gaming-phone load this product exists for. A Notification Service Extension is the supported path, and discovering that at M3 instead of now would have cost a redesign of the delivery layer.
+
+**Not verified:** Google Play's current policy position on `NotificationListenerService` (Q1), the correct Android 14+ `foregroundServiceType` (Q8), and the present state of the RN crypto ecosystem (Q2). All three are marked open rather than answered.
+
+### v0.1 — 2026-08-10
+**Type:** Added
+
+Initial draft. Problem, users, platform constraint, goals, success criteria, FR-1–FR-25, data model, technical approach, milestones M0–M6, deferred items, open questions 1–6.
