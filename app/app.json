@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "NotifSync",
+    "slug": "notifsync",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "android": {
+      "package": "com.zeyune.notifsync",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.zeyune.notifsync"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}

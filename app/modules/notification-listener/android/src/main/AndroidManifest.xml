@@ -1,0 +1,27 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <!--
+      The NotificationListenerService declaration (FR-5, FR-6).
+
+      android:exported must be "true": the service is bound by the system, which
+      lives in another process. It is not open to other apps, because binding is
+      gated on BIND_NOTIFICATION_LISTENER_SERVICE, which only the system holds.
+      Android 12+ requires exported to be declared explicitly whenever an
+      intent-filter is present.
+
+      No foregroundServiceType is declared here. Per FR-23 (as corrected in PRD
+      v0.5) this service is bound and restarted by the system; it is not a
+      foreground service, and whether NotifSync ever runs one is an M5 decision
+      driven by measured gaps, not an assumption baked in at M0.
+    -->
+    <service
+      android:name="expo.modules.notificationlistener.NotifSyncListenerService"
+      android:label="NotifSync"
+      android:exported="true"
+      android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+      <intent-filter>
+        <action android:name="android.service.notification.NotificationListenerService" />
+      </intent-filter>
+    </service>
+  </application>
+</manifest>

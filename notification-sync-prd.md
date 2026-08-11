@@ -1,6 +1,6 @@
 # NotifSync — Product Requirements Document
 
-**Status:** Draft v0.4
+**Status:** Draft v0.5
 **Date:** 2026-08-10
 **Owner:** Effie
 **Stack decision:** React Native (Expo, prebuild + local config plugin), single app, dual role: sender + receiver
@@ -120,7 +120,9 @@ This is the single fact the whole product is shaped around:
 
 ### 6.6 Reliability
 
-- **FR-23** — The sender runs a foreground service with a persistent (minimal-priority) notification, which is what keeps the listener alive. On Android 14+ the service must declare an appropriate `foregroundServiceType` in the manifest and justify it at review; confirm which type applies before M0 (see §12 Q8).
+- **FR-23** — The sender **may** run a foreground service with a persistent (minimal-priority) notification, as hardening against OEM process-killers (FR-24). **Whether it ships is decided at M5 by measurement, not assumed.**
+  *Corrected premise (v0.5): the earlier wording said the foreground service "is what keeps the listener alive". It does not. `NotificationListenerService` is bound and restarted by the system, survives reboot on its own, and exposes `requestRebind()` from `onListenerDisconnected()` as the documented recovery path. The foreground service resists OEM battery managers; it is not life support. This matters beyond pedantry — it is also the justification that would be offered to Play review, and "it keeps my listener alive" is a claim a reviewer can check and find false.*
+  **If it ships, the declared `foregroundServiceType` is `specialUse`** (see §12 Q8), never `dataSync`. Implement `requestRebind()` on disconnect regardless of whether the foreground service ships — that path is the listener's actual resilience mechanism.
 - **FR-24** — Onboarding includes a battery-optimization exemption request and, on known-aggressive OEMs (Xiaomi, Oppo, Vivo, Samsung, Huawei), a deep link to that vendor's autostart/protected-apps screen with instructions. **This is the number one cause of "it worked for a week then stopped" in every competing app and deserves real design effort, not a footnote.** As a public product it is also the number one predicted support-ticket driver.
 - **FR-25** — A heartbeat from sender to receiver. If the receiver hasn't heard from a paired sender in N hours, it raises a "phone 2 may have stopped forwarding" alert. Silent failure is the worst outcome for this product — a false alarm beats a missed raid.
 - **FR-33** — A **diagnostics screen** answering "why isn't it working?" without a support ticket: notification access granted (y/n), battery exemption granted (y/n), OEM autostart step completed (y/n/unknown), push token registered (y/n), last successful delivery, last heartbeat, gap count from FR-26, and a copy-to-clipboard summary containing **no notification content**. Reachable from the main screen in one tap, not buried in settings.
@@ -190,7 +192,7 @@ This section exists only because of the day-one-product scope decision. Under a 
 3. **M2 — Pairing + crypto.** QR pairing, key exchange, AEAD payloads, sequence numbers (FR-26).
 4. **M3 — Relay.** Backend + FCM/APNs, so it works off-network and with the app killed. iOS receiver with Notification Service Extension (FR-35) working. **Validate APNs behaviour under sustained load here** — Q4 below.
 5. **M4 — Filtering.** Allowlist, recent-apps screen, keyword rules, dedupe.
-6. **M5 — Reliability hardening.** Foreground service, battery exemption onboarding, OEM deep links, heartbeat, diagnostics screen (FR-33), 72-hour soak test measured via FR-26.
+6. **M5 — Reliability hardening.** Battery exemption onboarding, OEM deep links, `requestRebind()` recovery, heartbeat, diagnostics screen (FR-33), 72-hour soak test measured via FR-26. **Run the soak test *before* building the foreground service, not after** — FR-23 now treats that service as a response to measured gaps rather than a given, and doing it in the other order destroys the measurement that decides whether it is needed at all.
 7. **M6 — Polish.** History, quiet hours, per-device mute, settings.
 8. **M7 — Release readiness.** Privacy policy, Data Safety declaration, prominent disclosure (FR-28), store listings, FAQ, support channel, external pairing test with five non-technical users (success criterion 5).
 
@@ -229,7 +231,17 @@ M0–M2 are the interesting technical risk. M5 is where the product lives or die
    **Rationale — the funding problem was smaller than v0.2 assumed.** §9.3 treated hosted-relay cost as an open financial risk needing a business model. The architecture had already solved it: FR-32 deletes ciphertext on acknowledgement, FR-16 delivers over FCM and APNs which cost nothing, FR-17 keeps most payloads out of storage entirely, and FR-9 caps volume per app. Marginal cost per user is approximately one function invocation plus a row that deletes itself. The exposure is abuse and traffic spikes, not legitimate use — and a quota addresses that where a price does not.
 
    **Note for any future paid tier: §2's accountless rule survives it.** Play Billing and StoreKit hold the payment identity, so a store-managed purchase never requires NotifSync to know who anyone is. What that mechanism cannot do is bill self-hosters or accept payment outside the stores. Any revenue design that needs either of those collides with §2 and should be treated as a change to §2, not an addition to §9.3.
-8. **Android 14+ `foregroundServiceType`** — which declared type legitimately covers this service, and does the chosen type survive review? Confirm before M0; it affects the manifest the M0 spike is built on. Note the review also wants a demo video (§9.1), so the answer has a production cost attached, not just a manifest line.
+8. **Android 14+ `foregroundServiceType`** — **Answered 2026-08-10: `specialUse`, and only if a foreground service ships at all.**
+
+   **`dataSync` is disqualified, and it is the trap.** It is what nearly every tutorial recommends for keeping a notification listener alive. On Android 15+ it is capped at **6 hours per 24-hour period** — the system calls `Service.onTimeout()` and the service has seconds to `stopSelf()` or the system throws — and it **cannot be started from a `BOOT_COMPLETED` receiver**. A 24/7 relay that must survive reboot fails both conditions, and fails *silently, six hours in*, which is indistinguishable from the OEM-killer symptom FR-24 exists to prevent.
+
+   **`connectedDevice`** requires Bluetooth/NFC/USB/wifi-state prerequisites this app has no reason to hold, and the docs redirect remote-messaging operations away from it. **`systemExempted`** is restricted to device owners, device admins, VPN and emergency-role apps. **`remoteMessaging`** is the tempting near-fit — no timeout, no prerequisites, no justification string — but its stated scope is transferring *text messages* between devices for "continuity of a user's messaging tasks when they switch devices". NotifSync forwards game and app notifications to a device the user is deliberately not holding. That is not messaging continuity, and the gap is visible to any reviewer reading the type description alongside the store listing.
+
+   **`specialUse`** covers "any valid foreground service use cases that aren't covered by the other foreground service types", carries no timeout, and survives boot. Its cost is a free-form `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` manifest string reviewed in Play Console, plus the demo video (§9.1). **Write that string to pre-empt "why not `remoteMessaging`?"** — state that the payload is arbitrary app notifications rather than messages, and that delivery is continuous rather than tied to a user switching devices. That is the objection a reviewer will actually raise.
+
+   **Still open, deliberately:** whether a foreground service ships at all. FR-23's rewrite makes this an M5 measurement rather than an M0 assumption. If the 72-hour soak test shows no gaps via FR-26 on real OEM hardware, the service, the persistent notification, the justification string and the demo video are all unnecessary.
+
+   *Not verified: `remoteMessaging` was rejected on a reading of its documented scope, not on a known rejection. No submission has been attempted. Note also that Google's timeout documentation says the 6-hour restriction "currently" applies only to `dataSync` and `mediaProcessing` — that set has already grown once, when `mediaProcessing` was added in Android 15, so re-check it before each target-API bump.*
 9. **Product name.** Q1's precedent search surfaced a Play listing called **"Notify Sync: Secure E2E Mirror"** — same category, same end-to-end-encryption pitch, and close enough to "NotifSync" to be confused with it in store search. §1's competitor table predates this and lists only Pushbullet, Join, KDE Connect, and Tasker glue. Decide whether to rename, and refresh §1 against what is actually shipping now rather than against the options considered at v0.1. *Not verified: the listing was seen via search results, not confirmed first-party.*
 
    **Candidate: `noti-noti`.** Distinctive enough to avoid the store-search collision that motivates this question, which is the main thing being solved for. Before committing, check it against the trademark position and the availability of the matching Play package ID, domain, and store listing name — a name that collides at the package-ID or trademark level is a costlier mistake than one that collides in search results.
@@ -237,6 +249,17 @@ M0–M2 are the interesting technical risk. M5 is where the product lives or die
 ---
 
 ## Revision history
+
+### v0.5 — 2026-08-10
+**Type:** Changed
+
+Answered Q8: **`specialUse`**, and only if a foreground service ships at all. Rewrote FR-23, which asserted that the foreground service "is what keeps the listener alive" — it does not; `NotificationListenerService` is bound and restarted by the system and exposes `requestRebind()` as its recovery path. FR-23 now makes the foreground service conditional on gaps actually measured at M5, and M5 is reordered so the soak test runs before the service is built.
+
+**Why:** two things were wrong and one was dangerous. The dangerous one is `dataSync` — the type every tutorial recommends for this exact job, and the one Q8 would most likely have landed on without checking. On Android 15+ it is capped at six hours per 24 hours and cannot start from `BOOT_COMPLETED`, so a continuous relay dies mid-day with no error the user can see. That is precisely the failure mode FR-24 calls the number one killer of apps in this category, and it would have been built in deliberately.
+
+The second is FR-23's premise. Because the system already keeps the listener bound, the foreground service is OEM hardening rather than life support — which means it may not be needed at all, and the project already owns the instrument to find out: FR-26's sequence numbers make gaps visible, so M5's soak test can answer empirically what v0.2 assumed. It also means the justification submitted to Play review cannot be "this keeps my listener alive", since a reviewer can check that and find it false.
+
+**Not verified:** `remoteMessaging` was rejected by reading its documented scope against this product, not on any known rejection — it carries no timeout and would be cheaper if accepted, so the choice trades a possible review argument for certainty. Google's timeout documentation says the six-hour restriction "currently" covers only `dataSync` and `mediaProcessing`; that set already grew once, so it needs re-checking at every target-API bump. No submission has been attempted and no OEM device has been tested.
 
 ### v0.4 — 2026-08-10
 **Type:** Decided

@@ -2,11 +2,49 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Current state
+## What this is
 
-There is no code in this repository. It contains one document — [notification-sync-prd.md](notification-sync-prd.md) — and an empty git history (branch `master`, zero commits). There are no build, lint, test, or run commands yet; this section gets replaced the moment a scaffold exists.
+NotifSync is an end-to-end encrypted notification relay between a user's own devices: an Android phone forwards selected notifications to a paired phone over a relay that only ever sees ciphertext. [notification-sync-prd.md](notification-sync-prd.md) is the spec and the source of truth for every requirement (FR-*) and open question (Q*) referenced below.
 
-NotifSync is a planned end-to-end encrypted notification relay between a user's own devices: an Android phone forwards selected notifications to a paired phone over a relay that only ever sees ciphertext.
+**Current milestone: M0** — a capture spike proving the Kotlin `NotificationListenerService` can hand notifications to JS. No network, no crypto, no filtering, no foreground service.
+
+## Commands
+
+All commands run from [app/](app/).
+
+```bash
+npx tsc --noEmit                              # typecheck — the only check that runs without a JDK
+npx expo prebuild --platform android          # regenerate android/ from app.json + modules
+npx expo run:android                          # build and install on a connected device
+npx expo start --dev-client                   # Metro, once a dev build is installed
+npx expo-modules-autolinking resolve -p android   # verify the native module is linked
+adb logcat -s NotifSyncListener               # native listener logs
+```
+
+There is no test runner yet. `npx expo start` alone is not useful — Expo Go cannot load the custom native module.
+
+**`android/` and `ios/` are generated and gitignored.** This is a prebuild (CNG) project: native directories are rebuilt from `app.json` and `modules/`, never hand-edited. An edit made directly in `android/` disappears at the next prebuild.
+
+## Layout
+
+```
+app/
+  App.tsx                              M0 throwaway UI — permission state + captured list
+  modules/notification-listener/       local Expo module, autolinked from modules/
+    index.ts                           TS API + CapturedNotification type
+    expo-module.config.json            registers the Kotlin module class
+    android/src/main/
+      AndroidManifest.xml              the <service> declaration, merged at gradle build
+      java/expo/modules/notificationlistener/
+        NotifSyncListenerService.kt    the listener itself
+        NotificationListenerModule.kt  JS bridge
+```
+
+The service is declared in the **module's own manifest**, not via a config plugin — the manifest merger handles it, which is more robust than a `dangerousMod` plugin editing generated XML. PRD §8 says "config plugin"; this is the same outcome by a better route, and a plugin is still the answer for anything the merger cannot express.
+
+## Build toolchain
+
+Node and npm are present. **A JDK, the Android SDK, and `adb` are not** — install Android Studio to get all three. Until then only `tsc`, `expo config`, `expo prebuild`, and autolinking checks can run; nothing Kotlin has ever been compiled.
 
 ## The gate: no code until Q1 is answered
 
