@@ -1,4 +1,22 @@
-# Changelog
+## 2026-08-11
+
+### Capture real-app notification volumes; first evidence against FR-9's rate limit
+**Type:** Added
+**Time:** 22:05 +08:00
+**Files:** — (runtime observation only)
+**Related:** FR-7, FR-8, FR-9, FR-20, §12 Q6
+
+Ran the M0 spike against real traffic on the Samsung for ~10 minutes. Captured: Gmail 17, WhatsApp 13, SystemUI 9, Google app 2, Messenger 1.
+
+**FR-9's default rate limit looks wrong.** It specifies 10 per minute per source app. Gmail posted **8 notifications in 130 milliseconds** (22:02:31, identical tag `gig:…^sq_ig_i_personal`, differing IDs) as it re-posted its notification set on sync, and 17 within the observation window. An ordinary mail sync would therefore trip the limit and report legitimate mail as "suppressed". The 10/min figure was a guess in the spec; this is the first measurement against it. **Not changed in the PRD** — one device over ten minutes is not enough to pick a replacement number, and the right fix may be dedupe (FR-8) before rate limiting rather than a larger budget.
+
+**Messaging apps do not share a notification shape.** WhatsApp posts **two** notifications per message — one per-chat (tagged), one group summary (`null` tag) — 38 ms apart. Messenger posts **one**, tagged `ADVANCED_CRYPTO_ONE_TO_ONE:<threadId>`. FR-8's `(package, title, body)` dedupe key would not collapse WhatsApp's pair, since the summary carries different text. Dedupe has to handle both shapes.
+
+**FR-7 confirmed necessary.** SystemUI's `charging_state` re-posts roughly once per minute while charging — a continuous drip consuming ~10% of FR-9's per-app budget indefinitely, carrying no information a user wants forwarded.
+
+**Useful for FR-20:** Messenger's tag embeds a stable conversation ID, which is a grouping key available without reading any notification content.
+
+**Not verified — the important one.** Whether `title` and `body` are populated for `MessagingStyle` notifications is **still unknown**. Content is deliberately not logged, so this cannot be read from logcat, and it was not confirmed on screen. If `EXTRA_TEXT` is empty for WhatsApp or Messenger, the relay would forward blank notifications and the capture code needs a `MessagingStyle` path. **This is the first thing to check before M1.**
 
 ## 2026-08-11
 
