@@ -1,5 +1,23 @@
 ## 2026-08-11
 
+### Add FR-36 (drop group summaries) and field-presence diagnostics
+**Type:** Added
+**Time:** 22:22 +08:00
+**Files:** `notification-sync-prd.md`, `app/modules/notification-listener/android/src/main/java/expo/modules/notificationlistener/NotifSyncListenerService.kt`
+**Related:** FR-6, FR-7, FR-8, FR-9, FR-36
+
+Added a diagnostic that logs *which* notification text fields are populated — never their content — plus the style template. Used it to settle whether `EXTRA_TEXT` is sufficient. Added **FR-36** to the PRD and implemented it: notifications carrying `FLAG_GROUP_SUMMARY` are dropped at capture. Also recorded the FR-9 measurement under FR-9 itself.
+
+**Measured across styles:** `MessagingStyle`, `InboxStyle`, `BigTextStyle` and `MediaStyle` all populate `EXTRA_TITLE` and `EXTRA_TEXT`. **The suspected `MessagingStyle` capture bug does not exist** — reading those two fields is sufficient, and no `EXTRA_MESSAGES`/`EXTRA_BIG_TEXT` fallback is needed. Group summaries, by contrast, have every text field null.
+
+**Why FR-36 is capture and not FR-7 filtering:** ongoing notifications carry real content some user might want forwarded, making their exclusion a preference that belongs to M4. A group summary is structurally empty under every configuration, so emitting one is a defect. WhatsApp posts a summary alongside every per-chat message, so without this each message forwards twice — once with content, once blank.
+
+**Diagnostics log presence only.** Field names and structural counts, never values, for the same reason content is absent from the capture log: logcat is readable over adb.
+
+**NOT VERIFIED — FR-36's implementation has never been observed to fire.** Ten synthetic notifications across five styles produced no group summary at all, so the code path is untested. Worse, the empty row that motivated this was a `ranker_group` — a system *ranker* artifact — while the implementation targets `FLAG_GROUP_SUMMARY`, the flag apps set themselves. **These may not be the same thing**, and if `ranker_group` does not carry that flag, this fix does not address the case actually observed. Confirming needs a real WhatsApp message and one log line; until then FR-36 is written and shipped but unproven.
+
+**Also not verified:** real `MessagingStyle` from WhatsApp. The style findings come from `cmd notification post`, which constructs notifications simply; a real app may populate fields differently.
+
 ### Capture real-app notification volumes; first evidence against FR-9's rate limit
 **Type:** Added
 **Time:** 22:05 +08:00

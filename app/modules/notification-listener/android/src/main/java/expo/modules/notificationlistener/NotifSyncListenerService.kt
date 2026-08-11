@@ -66,10 +66,22 @@ class NotifSyncListenerService : NotificationListenerService() {
       Log.d(TAG, "dropped ${sbn.packageName} — no JS listener attached")
       return
     }
-    Log.d(TAG, "captured ${sbn.packageName} key=${sbn.key}")
-
     val extras: Bundle = sbn.notification.extras
     val flags = sbn.notification.flags
+
+    // FR-36. Group summaries carry no text of their own — title, text, bigText,
+    // textLines and messages are all empty — so forwarding one delivers a blank
+    // notification. WhatsApp posts a summary alongside every per-chat message,
+    // which would double both relay traffic and FR-9's rate-limit consumption
+    // while showing the receiver nothing. Unlike FR-7's ongoing notifications,
+    // there is no configuration under which this is wanted, so it is dropped at
+    // capture rather than left to M4's filtering.
+    if ((flags and Notification.FLAG_GROUP_SUMMARY) != 0) {
+      Log.d(TAG, "skipped group summary ${sbn.packageName} key=${sbn.key}")
+      return
+    }
+
+    logFieldPresence(sbn, extras)
 
     emit(
       CapturedNotification(
@@ -85,6 +97,38 @@ class NotifSyncListenerService : NotificationListenerService() {
           sbn.notification.sound == null &&
           sbn.notification.vibrate == null,
       ),
+    )
+  }
+
+  /**
+   * Reports *which* text fields a notification populated — never what is in them.
+   *
+   * `EXTRA_TEXT` is not the only place Android stores notification body text:
+   * `BigTextStyle` writes `EXTRA_BIG_TEXT`, `InboxStyle` writes
+   * `EXTRA_TEXT_LINES`, and `MessagingStyle` writes `EXTRA_MESSAGES`. An app
+   * reading only `EXTRA_TEXT` silently captures blanks from all three. This log
+   * says which fields are present so that gap is measurable rather than guessed.
+   *
+   * Only presence and structural counts are logged. Content never is — logcat is
+   * readable over adb, and the product's whole claim is that notification text
+   * stays private.
+   */
+  @Suppress("DEPRECATION")
+  private fun logFieldPresence(sbn: StatusBarNotification, extras: Bundle) {
+    fun presence(value: CharSequence?) = if (value.isNullOrEmpty()) "null" else "present"
+
+    val style = extras.getString(Notification.EXTRA_TEMPLATE)
+      ?.substringAfterLast('$')
+      ?: "none"
+
+    Log.d(
+      TAG,
+      "captured ${sbn.packageName} key=${sbn.key} style=$style " +
+        "title=${presence(extras.getCharSequence(Notification.EXTRA_TITLE))} " +
+        "text=${presence(extras.getCharSequence(Notification.EXTRA_TEXT))} " +
+        "bigText=${presence(extras.getCharSequence(Notification.EXTRA_BIG_TEXT))} " +
+        "textLines=${extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.size ?: 0} " +
+        "messages=${extras.getParcelableArray(Notification.EXTRA_MESSAGES)?.size ?: 0}",
     )
   }
 

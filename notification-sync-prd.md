@@ -89,6 +89,9 @@ This is the single fact the whole product is shaped around:
 - **FR-7** — Ongoing notifications (media players, "app is running", foreground service notices) are excluded by default. They update constantly and would flood the relay.
 - **FR-8** — Duplicate suppression: identical `(package, title, body)` within a configurable window (default 60s) forwards once. Games that re-post the same "stamina full" notice on every tick must not spam.
 - **FR-9** — A rate limit per source app (default 10/minute) with a visible "N notifications suppressed" summary rather than silent dropping.
+  *Measured 2026-08-11 and the default looks wrong: Gmail posted 8 notifications in 130 ms while re-posting its set on sync, and 17 inside a ten-minute window. An ordinary mail sync would trip this limit and report legitimate mail as suppressed. One device over ten minutes is not enough to choose a replacement number, and the right answer may be to run FR-8's dedupe before the limiter rather than to raise the budget. Revisit with real data at M4.*
+- **FR-36** — **Group summary notifications are dropped at capture.** A notification carrying `FLAG_GROUP_SUMMARY` has no text of its own — title, text, bigText, textLines and messages are all empty — so forwarding one delivers a blank notification to the receiver.
+  *Rationale, and why this is not FR-7: ongoing notifications are real notifications with real content that some user might legitimately want forwarded, which makes excluding them a filtering preference belonging to M4. A group summary is structurally empty under every configuration, so emitting one is a capture defect rather than a policy choice. Measured on 2026-08-11: WhatsApp posts a summary alongside every per-chat message, so without this every message forwards twice — once with content, once blank — doubling relay traffic and FR-9's rate-limit consumption for no benefit.*
 
 ### 6.3 Filtering
 
