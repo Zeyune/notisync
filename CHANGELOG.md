@@ -2,6 +2,22 @@
 
 ## 2026-08-11
 
+### Validate capture on a second device with a real system notification
+**Type:** Added
+**Time:** 21:56 +08:00
+**Files:** — (runtime verification only)
+**Related:** §10 M0, FR-7, FR-24
+
+Installed the existing APK on a Samsung Galaxy A52 5G (`SM_A526B`, Android 14 / API 34), reversed port 8081 for Metro over USB, granted notification access via `adb shell cmd notification allow_listener`, and confirmed the full chain in logcat. The first capture was a **real** notification — `com.android.systemui` `charging_state` — rather than one posted by the test harness.
+
+**Why this mattered:** M0 had only ever been exercised with `adb shell cmd notification post`, which posts from `com.android.shell` through a synthetic channel. Real notifications differ in ways the product depends on — custom channels, group summaries, ongoing flags, and apps that populate `EXTRA_TITLE`/`EXTRA_TEXT` unconventionally. The rig now covers two of the five OEMs FR-24 names (Xiaomi/HyperOS and Samsung/Android 14).
+
+**First live FR-7 case:** the captured `charging_state` notification is an ongoing one — precisely the constantly-updating class FR-7 excludes by default to avoid flooding the relay. Nothing filters it yet; filtering is M4.
+
+**Noted:** the grant check immediately after `allow_listener` reported not granted, then read correctly moments later — the settings write had not propagated. The grant itself worked; the check was too eager.
+
+**Not verified:** no third-party app notification has been captured yet — only a system one. Game notifications, the actual target workload, remain untested. Nothing has been observed with the app backgrounded or killed, where the M0 design deliberately drops captures because the JS emitter is detached.
+
 ### Add listener instrumentation, requestRebind recovery, and safe-area context
 **Type:** Added
 **Time:** 21:48 +08:00
