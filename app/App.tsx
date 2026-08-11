@@ -4,11 +4,14 @@ import {
   AppState,
   FlatList,
   Pressable,
-  SafeAreaView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import {
+  SafeAreaProvider,
+  SafeAreaView,
+} from "react-native-safe-area-context";
 
 import NotificationListener, {
   CapturedNotification,
@@ -23,11 +26,25 @@ import NotificationListener, {
  * job is to make the capture visible.
  */
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <CaptureScreen />
+    </SafeAreaProvider>
+  );
+}
+
+function CaptureScreen() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [items, setItems] = useState<CapturedNotification[]>([]);
 
   const refreshPermission = useCallback(() => {
-    setEnabled(NotificationListener.isEnabled());
+    const granted = NotificationListener.isEnabled();
+    setEnabled(granted);
+    // An app update breaks the binding but leaves the grant in place, so
+    // "granted" is not the same as "connected". Asking every time we foreground
+    // is cheap and is the only way back — the disconnect callback never fires,
+    // because the service is never constructed in the new process.
+    if (granted) NotificationListener.requestRebind();
   }, []);
 
   // The notification-access grant happens in a system settings screen, so the

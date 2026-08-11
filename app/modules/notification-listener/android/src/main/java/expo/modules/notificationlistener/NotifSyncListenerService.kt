@@ -59,7 +59,14 @@ class NotifSyncListenerService : NotificationListenerService() {
   }
 
   override fun onNotificationPosted(sbn: StatusBarNotification) {
-    val emit = emitter ?: return
+    val emit = emitter
+    if (emit == null) {
+      // Not an error: the service outlives the JS runtime, so posts arriving
+      // while nothing is listening are dropped by design at M0.
+      Log.d(TAG, "dropped ${sbn.packageName} — no JS listener attached")
+      return
+    }
+    Log.d(TAG, "captured ${sbn.packageName} key=${sbn.key}")
 
     val extras: Bundle = sbn.notification.extras
     val flags = sbn.notification.flags

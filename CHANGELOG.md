@@ -2,6 +2,26 @@
 
 ## 2026-08-11
 
+### Add listener instrumentation, requestRebind recovery, and safe-area context
+**Type:** Added
+**Time:** 21:48 +08:00
+**Files:** `app/modules/notification-listener/android/src/main/java/expo/modules/notificationlistener/NotifSyncListenerService.kt`, `.../NotificationListenerModule.kt`, `app/modules/notification-listener/index.ts`, `app/App.tsx`, `app/package.json`
+**Related:** §10 M0, FR-5, FR-24, FR-25, FR-33
+
+Three changes. Added logging across the capture path: `captured <pkg> key=<key>` on delivery, `dropped <pkg> — no JS listener attached` when nothing is observing, and `JS attached/detached` around the emitter. Added a `requestRebind()` function exposed to JS and called on every foreground when access is granted. Replaced React Native's deprecated `SafeAreaView` with `react-native-safe-area-context` (~5.7.0), wrapping the tree in `SafeAreaProvider`.
+
+**Why the logging:** when the first capture test showed `Captured (0)`, "never fired", "fired with no emitter", and "screenshot raced the post" were indistinguishable. The four log lines now separate them at a glance, and the same ambiguity would be far more expensive at M1 with a network in the path.
+
+**No notification content is logged — deliberately.** Only package name and `StatusBarNotification.key`. Logcat is readable over adb, and a product whose premise is that the operator cannot read notification text must not write it to a debug log.
+
+**Why requestRebind:** after reinstalling the app, `enabled_notification_listeners` still named the service and the UI still read "granted", but no notification was delivered and `listener connected` never logged. `onListenerDisconnected` cannot recover this, because the service is never constructed in the new process for the callback to run. `NotificationListenerService.requestRebind()` is static and works without a live instance. **This will occur on every app update in production**, presenting as "access is on but nothing forwards" — the silent-failure mode FR-25's heartbeat and FR-33's diagnostics exist to surface.
+
+**Not verified — requestRebind is not proven to be the fix.** On the verifying run, `listener connected` logged *before* `requesting rebind`, so the service bound unaided and the call was a no-op. The earlier failure may simply have needed longer than the nine seconds allowed. The call is correct per documentation and harmless when already connected, but it is defensive rather than a confirmed remedy, and the reinstall-breaks-binding behaviour has been observed once, not characterised.
+
+**Verified:** `npx tsc --noEmit` clean; `app:assembleDebug` BUILD SUCCESSFUL; reinstalled on device; logcat shows the full chain `listener connected` → `requesting rebind` → `JS attached — emitter installed` → `captured com.android.shell key=...`.
+
+**Process note:** a verification screenshot captured the phone mid-use and contained personal account details rather than the app. All screenshots taken this session were deleted from the scratchpad. No further screenshots of the device without asking first.
+
 ### Ignore Gradle output inside local Expo modules
 **Type:** Fixed
 **Time:** 21:37 +08:00

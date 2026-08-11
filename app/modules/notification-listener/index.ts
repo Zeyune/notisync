@@ -32,6 +32,12 @@ declare class NotificationListenerNativeModule extends NativeModule<Notification
   isEnabled(): boolean;
   /** Opens the system Notification access screen (FR-5). */
   openSettings(): void;
+  /**
+   * Asks the system to rebind the listener. Call whenever access is granted but
+   * events are not arriving — notably after an app update, which silently breaks
+   * the binding while leaving the grant intact.
+   */
+  requestRebind(): void;
 }
 
 const Native = requireNativeModule<NotificationListenerNativeModule>(
@@ -41,6 +47,7 @@ const Native = requireNativeModule<NotificationListenerNativeModule>(
 export default {
   isEnabled: (): boolean => Native.isEnabled(),
   openSettings: (): void => Native.openSettings(),
+  requestRebind: (): void => Native.requestRebind(),
   addNotificationListener: (
     listener: (notification: CapturedNotification) => void,
   ) => Native.addListener("onNotificationPosted", listener),
