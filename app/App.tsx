@@ -5,7 +5,9 @@ import {
   FlatList,
   Pressable,
   StyleSheet,
+  Switch,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import {
@@ -16,14 +18,19 @@ import {
 import NotificationListener, {
   CapturedNotification,
 } from "./modules/notification-listener";
+import { sendToReceiver, toForwarded } from "./lanForwarding";
 
 /**
- * M0 spike (see notification-sync-prd.md §10).
+ * M1 LAN loop (see notification-sync-prd.md §10).
  *
- * Scope is deliberately narrow: prove that a Kotlin NotificationListenerService
- * can capture notifications and hand them to JS. No network, no encryption, no
- * filtering, no foreground service. Everything below is throwaway UI whose only
- * job is to make the capture visible.
+ * M0 proved the Kotlin NotificationListenerService can capture notifications and
+ * hand them to JS. M1 adds exactly one thing: pushing each capture over the
+ * local network to a receiver, to find out whether §7's `ForwardedNotification`
+ * is the right shape before M2 encrypts it and M3 puts a relay behind it.
+ *
+ * Still absent, deliberately: encryption, pairing, filtering, queueing, retry,
+ * discovery, and a foreground service. PRD §10 timeboxes this milestone and
+ * throws it away at M3, so anything polished here is paid for twice.
  */
 export default function App() {
   return (
@@ -48,12 +55,66 @@ export default function App() {
  * dedupe design and FR-9's rate limit. Suppression belongs at M4, downstream of
  * a measurement that has to stay visible until then.
  */
-type CaptureRow = CapturedNotification & { captureId: number };
+type CaptureRow = CapturedNotification & {
+  captureId: number;
+  /**
+   * What happened when this capture was forwarded.
+   *
+   * Shown per row rather than as one global "last send" line because the
+   * interesting failure at M1 is partial: captures continuing while sends
+   * silently stop, which a single status line hides and a per-row one makes
+   * obvious at a glance.
+   */
+  forward: ForwardState;
+};
+
+type ForwardState =
+  | { state: "off" }
+  | { state: "pending" }
+  | { state: "sent" }
+  | { state: "failed"; error: string };
+
+/**
+ * Identifies the sender in the payload (§7's `deviceLabel`).
+ *
+ * Hardcoded: at M2 this comes from the pairing flow, and inventing a settings
+ * screen for it now would be building M6 inside M1.
+ */
+const DEVICE_LABEL = "Samsung A52";
 
 function CaptureScreen() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [items, setItems] = useState<CaptureRow[]>([]);
   const nextCaptureId = useRef(0);
+
+  /**
+   * Defaults to the USB reverse tunnel, not a LAN address.
+   *
+   * `adb reverse tcp:8787 tcp:8787` makes the laptop's receiver port appear as
+   * 127.0.0.1:8787 *on the phone*, so the loop closes over the cable that is
+   * already attached for development. That removes the three things that
+   * actually break a first LAN run — the phone being on mobile data, the host
+   * IP changing with DHCP, and Windows Firewall dropping inbound connections
+   * silently — none of which teach anything about the payload shape M1 exists
+   * to test.
+   *
+   * Replace with `<laptop-ip>:8787` for a genuine over-the-air run. That is
+   * worth doing before M1 is called done, because it is the first time the
+   * phone's radio, and not a cable, carries a notification.
+   */
+  const [host, setHost] = useState("127.0.0.1:8787");
+  const [forwarding, setForwarding] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const nextSeq = useRef(1);
+
+  // The capture subscription is set up once, so reading `host` and `forwarding`
+  // directly inside it would capture their first values forever. Mirroring them
+  // into refs keeps the current value available without tearing down and
+  // rebuilding the native listener subscription on every keystroke.
+  const hostRef = useRef(host);
+  const forwardingRef = useRef(forwarding);
+  hostRef.current = host;
+  forwardingRef.current = forwarding;
 
   const refreshPermission = useCallback(() => {
     const granted = NotificationListener.isEnabled();
@@ -75,16 +136,56 @@ function CaptureScreen() {
     return () => sub.remove();
   }, [refreshPermission]);
 
+  const markForwarded = useCallback((captureId: number, forward: ForwardState) => {
+    setItems((prev) =>
+      prev.map((row) => (row.captureId === captureId ? { ...row, forward } : row)),
+    );
+  }, []);
+
   useEffect(() => {
     const sub = NotificationListener.addNotificationListener((notification) => {
       // Incremented here rather than inside the updater: React may invoke an
       // updater more than once for the same delivery, which would burn ids and,
       // under a future concurrent render, hand two rows the same one.
       const captureId = nextCaptureId.current++;
-      setItems((prev) => [{ ...notification, captureId }, ...prev].slice(0, 200));
+      const shouldForward = forwardingRef.current;
+
+      setItems((prev) =>
+        [
+          {
+            ...notification,
+            captureId,
+            forward: shouldForward
+              ? ({ state: "pending" } as ForwardState)
+              : ({ state: "off" } as ForwardState),
+          },
+          ...prev,
+        ].slice(0, 200),
+      );
+
+      if (!shouldForward) return;
+
+      // Sequence numbers are consumed only by notifications actually sent, so a
+      // gap at the receiver means a lost delivery (FR-26) rather than one the
+      // user chose not to forward. Taken here, before the await, so concurrent
+      // captures cannot interleave and produce out-of-order numbering.
+      const seq = nextSeq.current++;
+      const payload = toForwarded(notification, seq, DEVICE_LABEL);
+
+      // Deliberately not awaited: the listener callback is a native event
+      // handler, and blocking it would apply backpressure to capture itself.
+      // Dropping a send on failure is correct for M1 — queueing and retry are
+      // M3, and inventing them here would hide exactly the losses M1 should
+      // surface.
+      void sendToReceiver(hostRef.current, payload).then((result) => {
+        markForwarded(
+          captureId,
+          result.ok ? { state: "sent" } : { state: "failed", error: result.error },
+        );
+      });
     });
     return () => sub.remove();
-  }, []);
+  }, [markForwarded]);
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -92,7 +193,7 @@ function CaptureScreen() {
 
       <View style={styles.header}>
         <Text style={styles.title}>NotifSync</Text>
-        <Text style={styles.subtitle}>M0 capture spike — no network</Text>
+        <Text style={styles.subtitle}>M1 LAN loop — plaintext, local network</Text>
       </View>
 
       <View style={styles.permissionCard}>
@@ -117,6 +218,53 @@ function CaptureScreen() {
             {enabled ? "Open settings" : "Grant notification access"}
           </Text>
         </Pressable>
+      </View>
+
+      <View style={styles.permissionCard}>
+        <View style={styles.forwardRow}>
+          <View style={styles.forwardLabels}>
+            <Text style={styles.permissionLabel}>Forward to receiver</Text>
+            <Text style={styles.permissionValue}>
+              {forwarding ? "on" : "off"}
+            </Text>
+          </View>
+          <Switch value={forwarding} onValueChange={setForwarding} />
+        </View>
+        <TextInput
+          style={styles.input}
+          value={host}
+          onChangeText={setHost}
+          placeholder="192.168.1.11:8787"
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="numbers-and-punctuation"
+          inputMode="url"
+        />
+        <Pressable
+          style={styles.buttonSecondary}
+          onPress={() => {
+            // A connectivity check that does not require waiting for a real
+            // notification. Wrong IP, wrong port, phone on mobile data and
+            // laptop firewall are all the same symptom — nothing arrives — and
+            // this separates "the network is wrong" from "capture is wrong".
+            const seq = nextSeq.current++;
+            void sendToReceiver(host, {
+              id: `test-${seq}`,
+              seq,
+              sourceApp: "NotifSync (test)",
+              title: "Test payload",
+              body: "If this prints on the laptop, the LAN path works.",
+              timestamp: Date.now(),
+              deviceLabel: DEVICE_LABEL,
+            }).then((result) => {
+              setTestResult(result.ok ? "sent ✓" : `failed — ${result.error}`);
+            });
+            setTestResult("sending…");
+          }}
+        >
+          <Text style={styles.buttonSecondaryText}>Send test payload</Text>
+        </Pressable>
+        {!!testResult && <Text style={styles.testResult}>{testResult}</Text>}
       </View>
 
       <View style={styles.listHeader}>
@@ -160,6 +308,20 @@ function CaptureScreen() {
               {item.ongoing ? " · ongoing" : ""}
               {item.silent ? " · silent" : ""}
             </Text>
+            {item.forward.state !== "off" && (
+              <Text
+                style={[
+                  styles.forwardState,
+                  item.forward.state === "sent" && styles.granted,
+                  item.forward.state === "failed" && styles.notGranted,
+                ]}
+              >
+                {item.forward.state === "pending" && "forwarding…"}
+                {item.forward.state === "sent" && "forwarded ✓"}
+                {item.forward.state === "failed" &&
+                  `not forwarded — ${item.forward.error}`}
+              </Text>
+            )}
           </View>
         )}
       />
@@ -190,6 +352,33 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   buttonText: { color: "#fff", fontWeight: "600" },
+  forwardRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  forwardLabels: { flex: 1 },
+  input: {
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: "#fff",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#c9ccd1",
+    fontSize: 15,
+  },
+  buttonSecondary: {
+    marginTop: 10,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#1f2937",
+    alignItems: "center",
+  },
+  buttonSecondaryText: { color: "#1f2937", fontWeight: "600" },
+  testResult: { marginTop: 8, fontSize: 13, color: "#444" },
+  forwardState: { marginTop: 4, fontSize: 11, fontWeight: "600" },
   listHeader: {
     flexDirection: "row",
     justifyContent: "space-between",

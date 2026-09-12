@@ -1,5 +1,147 @@
 ## 2026-09-12
 
+### Forward a real financial notification; fix FR-26 gap detection to survive reordering
+**Type:** Fixed
+**Time:** 22:35 +08:00
+**Files:** `tools/m1-receiver.mjs`
+**Related:** §1.1, §7, §10 M1, §10 M5, FR-8, FR-26
+
+**M1's question is answered.** A genuine GoTyme transfer notification was captured, forwarded and rendered on the receiver, and §7's field list proved **sufficient** for the §1.1 use case: `sourceApp` identified the bank, and `title` plus `body` carried the event, the sender, the amount and the resulting balance. Nothing further would be needed to act on it without picking up the phone. No field is missing, so M2 can encrypt this shape as specified.
+
+*The notification's contents are deliberately not reproduced here. This file is committed to a public remote, and the body carried a counterparty's name and an account balance — the same reasoning that keeps the Wi-Fi credential out of it.*
+
+**The run also exposed a real defect in the gap detector, which was the more valuable result.** Sequence 61 arrived *after* sequence 62, and the detector — which tracked only the highest sequence seen — reported two losses that had not occurred. Nothing was lost. The sender fires each POST without awaiting the previous one, deliberately, because awaiting would apply backpressure to capture itself; so two notifications captured milliseconds apart race and can complete out of order.
+
+**Why this was worth stopping for rather than noting.** FR-26's gap count is the measurement §10 M5's 72-hour soak test rests on, and that measurement decides whether a foreground service ships at all. A detector that reports reordering as loss would have made a healthy soak run look broken and argued for a service, a persistent notification, a `specialUse` justification string and a demo video that the evidence never actually required. The failure mode is worse at M3, where FCM offers no ordering guarantee.
+
+**The fix distinguishes outstanding from lost.** A skipped sequence number is now held as outstanding and reported as `↻ out of order … (not lost)` when it turns up. A `SIGINT` handler prints the session summary — received, reordered, and only then the sequence numbers that genuinely never arrived — because mid-run a missing number is indistinguishable from one still in flight, and that is the honest moment to call anything lost.
+
+**Also observed in the same window:** Messenger posted the same `Jubel / Sent a message.` body three times within one second under three separate sequence numbers, which is FR-8 dedupe material — and notably its `(package, title, body)` key *would* collapse these, unlike the WhatsApp case recorded 2026-08-12. Messenger also posts a `Checking for new messages` notice repeatedly, and Gmail a contentless `Syncing new mail` with `(no body)` — both FR-7 candidates. SystemUI's `charging_state` dominated the entire capture window, re-posting roughly every 30–50 seconds for over an hour.
+
+**Not verified:** `node --check` passes but the rewritten gap detector has not been exercised against a real reordering event — the run that motivated it is already over, and the fix is unproven against live traffic. The receiver process still running was started before this change. **GCash remains untested and may not be testable in this configuration:** it refuses to operate with Android Developer Options enabled, which USB debugging requires, so the entire adb-based development loop is mutually exclusive with it. GoTyme answered M1's question, so this was not pursued; it means any GCash-specific notification shape is unmeasured.
+
+### Close the M1 loop on device; record clock skew as a constraint on Q6's TTL
+**Type:** Added
+**Time:** 21:39 +08:00
+**Files:** `notification-sync-prd.md`, `tools/m1-receiver.mjs`
+**Related:** §10 M1, §7, §12 Q6, FR-7, FR-26
+
+**M1's core objective is met.** A real notification — SystemUI's charging notice — was captured by the Kotlin listener on the A52, forwarded over the USB reverse tunnel, and rendered on the receiver with `sourceApp`, `title`, `body` and `timestamp` all populated. Eight forwarded payloads arrived with **no sequence gaps** (FR-26) and **no §7 violations**: the receiver's `key` assertion never fired, so the structural exclusion in `toForwarded()` holds in practice and not just in review.
+
+**The most useful result was a defect in the measurement, not a success.** Arrival time minus `postTime` came out **negative** — rendered absurdly as `+-17ms` — because the phone's clock runs roughly 10–20 ms ahead of the laptop's. The formatting was fixed, but the underlying finding is recorded against **Q6** because it constrains the implementation rather than merely annotating it: a per-app TTL is the receiver comparing the sender's timestamp to its own clock, which inherits the skew between two devices that were never synchronised. At milliseconds this is invisible. On a phone whose clock has drifted minutes — no NTP, a manually set clock, a flat battery — a 15-minute TTL would discard live notifications or present dead ones as current, with nothing in the output pointing at a clock. Q6 now says the TTL must either be computed sender-side and forwarded as remaining lifetime, or carry enough information for the receiver to detect skew and decline to enforce. Left undecided deliberately; recorded so the naive subtraction is not written by default.
+
+**FR-7 demonstrated itself without being asked to.** The only genuine notification to arrive during the run was SystemUI's `charging_state`, re-posting 51 seconds later as the next sequence number — the exact traffic FR-7 exists to exclude, forwarded at full cost because M1 has no filtering by design. Note the 51-second interval sits well outside the 20-second modal interval measured on 2026-08-12; that figure stands, but the spread is wider than one number suggests.
+
+**Also observed, for whoever builds the receiver UI:** SystemUI's `body` contains a literal newline (`75% (22 m until full)\nCharging will stop at 80%…`). A receiver that assumes a single-line body will render it wrong. This is the second embedded-newline surprise in this project, after WhatsApp's notification key on 2026-08-12.
+
+**Not verified:** everything crossed a USB cable, not a radio. No notification has yet traversed Wi-Fi, so nothing here measures real network latency, packet loss, or behaviour when the receiver is unreachable — and the negative-lag figure means even the measured timings carry an unquantified clock offset. Only SystemUI and synthetic test payloads were forwarded; no financial notification, the actual use case per §1.1, has been through the path. The sender's timeout, per-row failure rendering, and the `failed` state remain unexercised because nothing has failed yet.
+
+### Default the M1 receiver address to the USB reverse tunnel
+**Type:** Changed
+**Time:** 21:35 +08:00
+**Files:** `app/App.tsx`
+**Related:** §10 M1
+
+The receiver address now defaults to `127.0.0.1:8787` rather than the laptop's LAN address. `adb reverse tcp:8787 tcp:8787` maps the laptop's receiver port onto the phone's own loopback, so the loop closes over the development cable already attached.
+
+**Why:** the first over-the-air attempt was blocked by the network, not by the code. `dumpsys wifi` showed the A52 with Wi-Fi enabled but `Supplicant state: DISCONNECTED, IP: null` — it was on mobile data, with no route to the laptop at all. Two further failure modes sat behind that one and fail silently: the host IP moves with DHCP, and Windows Firewall drops inbound connections on 8787 without a rule. None of the three teach anything about the payload shape that M1 exists to test, so spending the first run on them is spending it on the wrong problem.
+
+**Verified end to end over the cable**, not assumed: a payload POSTed from `adb shell` on the phone reached the laptop receiver and printed correctly (`[4] seq=10 … USB tunnel test`). `npx tsc --noEmit` clean.
+
+**The LAN run is deferred, not cancelled**, and the code comment says so. M1 is not finished until a notification crosses the phone's radio rather than a USB cable, because the radio is what M3 will actually depend on — a tunnel that works proves the data shape, not the transport.
+
+**Deliberately not recorded here: the Wi-Fi credential.** It was retrieved from the laptop's saved profiles at Effie's request and handed over in conversation only. This file is committed to a GitHub remote as of today, so writing a password into it would publish it — the same reasoning that keeps `GITHUB-ACCOUNTS.md` out of every repository.
+
+### Build the M1 LAN forwarding path: sender, wire format, and a laptop receiver
+**Type:** Added
+**Time:** 21:30 +08:00
+**Files:** `tools/m1-receiver.mjs`, `app/lanForwarding.ts`, `app/App.tsx`
+**Related:** §7, §10 M1, FR-26, FR-10, §12 Q6
+
+First code of M1. `app/lanForwarding.ts` defines the wire type and the send call; `app/App.tsx` gains a receiver-address field, a forwarding switch, a test-payload button and a per-row delivery state; `tools/m1-receiver.mjs` is a zero-dependency Node HTTP server standing in for the receiving phone.
+
+**The wire format is §7's `ForwardedNotification` verbatim** — `id, seq, sourceApp, title, body, timestamp, deviceLabel` — rather than a shape invented for convenience. M1 exists to test that list against real traffic before M2 wraps it in AEAD, so matching it exactly is the experiment. `packageName` is deliberately absent: FR-10's filtering runs on the sender, so the receiver has no use for it, and finding out whether that is wrong is part of the milestone.
+
+**`key` is excluded structurally, not by discipline.** `toForwarded()` names every field explicitly instead of spreading the captured object or using `Omit<…, "key">`. With a spread, any field added to `CapturedNotification` later would reach the wire silently; explicit construction forces a human decision. This is the §7 constraint recorded on 2026-08-12, and the receiver independently asserts on it — a payload containing `key` prints a violation rather than being quietly accepted, so the guard holds even if the sender is rewritten.
+
+**Sequence numbers are taken only by notifications actually sent**, and synchronously before the `await`, so a gap at the receiver means a lost delivery (FR-26) rather than a notification the user chose not to forward or two captures interleaving. The receiver tracks the highest seq per device label and prints a gap warning. That is FR-26's measurement working on day one of M1 rather than being retrofitted at M5, where it decides whether a foreground service is needed at all.
+
+**Sends are not awaited inside the native listener callback**, which would apply backpressure to capture itself, and failures drop rather than queue. Queue and retry are M3; adding them here would conceal exactly the losses M1 should be surfacing.
+
+**Verified:** `npx tsc --noEmit` clean. The receiver was exercised locally over loopback with three payloads — a normal delivery printed correctly, a deliberately skipped sequence number produced `⚠ GAP: 1 notification(s) lost`, and a payload carrying `key` produced the §7 violation line. Cleartext HTTP was confirmed permitted rather than assumed: React Native's generated `android/app/src/debug/AndroidManifest.xml` sets `android:usesCleartextTraffic="true"`, so no `expo-build-properties` change or rebuild is required for a dev build.
+
+**Not verified — nothing has been sent from the phone.** The sender code has never run: no notification has been forwarded from the A52, the address field's default (`192.168.1.11:8787`, the laptop's Wi-Fi address) has not been reached from the device, and Windows Firewall has not been configured to admit inbound connections on 8787, which is the most likely first failure. The per-row delivery states, the test-payload button and the abort-based timeout are all unexercised on device. `DEVICE_LABEL` is hardcoded to "Samsung A52" pending the M2 pairing flow.
+
+### Write the financial-use-case amendment into the PRD as v0.7
+**Type:** Changed
+**Time:** 21:26 +08:00
+**Files:** `notification-sync-prd.md`
+**Related:** §1.1, §7, §12 Q6, §10 M5, FR-10
+
+Added §1.1 recording that the primary use case is financial notifications; amended §7's stated metadata exposure; amended Q6's proposed TTL default; added revision-history entry v0.7. **Supersedes the "not verified — none of the above has been written into the PRD" note in the 21:23 entry below**, which was accurate when written and is now stale. Effie approved the amendment.
+
+**Why:** the consequences had been reasoned out and logged but existed only in the changelog, where a future session planning M4 or M7 would not encounter them. The PRD is the stated source of truth for FRs and open questions, so a requirement-affecting finding that lives outside it is a finding that gets re-derived or, more likely, missed — Q6's 15-minute TTL in particular reads as settled unless the amendment sits next to it.
+
+**Amendments append and mark what they supersede rather than replacing text.** §7's original gaming-activity wording is quoted inside the amendment that corrects it, and Q6's original reasoning is left intact above its inversion. §1's gaming narrative is kept and §1.1 added beneath it. This follows the PRD's own never-rewrite-history rule and keeps the reasoning legible to someone who wants to know why the default changed.
+
+**No FR was added, renumbered, or changed in meaning**, and Q6 is amended rather than marked answered — the mechanism (per-app TTL) is now confirmed but the shipped default is still open.
+
+**Not verified:** the use case remains a stated goal rather than observed behaviour — no financial notification has been captured or forwarded by this project. The claim in §7 that payload size may carry signal for a bank's consistent notification format is explicitly flagged in the PRD as reasoning rather than measurement; no size distribution has been collected for any app.
+
+### Record the money-notification use case; enable notification permission for four wallet apps
+**Type:** Decided
+**Time:** 21:23 +08:00
+**Files:** — (device configuration and a stated product goal; no project file changed yet)
+**Related:** §1, §7, FR-10, §12 Q6, §10 M5
+
+Effie stated that a primary goal is forwarding **financial notifications** — GCash, GoTyme and similar — to a second phone, and asked for the device's notification permissions to be turned on because they were known to be off. Five relevant packages were found on the A52: `com.globe.gcash.android` (already `allow`), plus `ph.com.gotyme`, `com.paymaya`, `ph.seabank.seabank` and `com.shopee.ph`, all four explicitly blocked. All four were granted.
+
+**`cmd appops set` was insufficient and would have looked like it worked.** Setting the package-level mode left `Uid mode: POST_NOTIFICATION: ignore` in place alongside a package-level `allow`, and the UID mode takes precedence — the apps would have stayed silent while the tooling reported success. `pm grant android.permission.POST_NOTIFICATIONS` was the route that took, and it collapsed the conflicting modes to a single clean `allow`. Recorded because the misleading intermediate state is easy to accept as done.
+
+**Maya and SeaBank carried `USER_FIXED`**, meaning Effie had explicitly denied them rather than never having been asked. That deliberate choice was overridden on request; the revoke commands were handed back.
+
+**Why this matters beyond the device — the PRD is written around the wrong use case.** §1 frames the product around a gaming phone, and three requirements inherit that framing:
+
+- **Q6's tentative answer inverts.** It reasons that a late "stamina full" is worse than no notification and proposes a 15-minute default TTL. A late "you received ₱5,000" is still fully useful, so financial apps want a long or unbounded TTL. The per-app TTL mechanism survives; the default does not.
+- **§7 understates the metadata exposure.** It says the relay can infer "when a user's gaming phone is active and roughly how busy it is". With wallet apps forwarded, the same timing and volume data reveals **when the user receives money and how often** — a materially more sensitive inference from identical metadata, and §6.7's privacy policy must not describe the weaker version.
+- **M5 changes category.** A dropped game notification costs nothing; a dropped payment notification defeats the stated purpose. The 72-hour soak test moves from hardening to the measurement that decides whether the product is usable.
+
+FR-10's deny-by-default and the end-to-end encryption were already correct for this and are now load-bearing rather than principled — transaction amounts crossing a relay in plaintext would be a different product.
+
+**Not verified, and deliberately not acted on:** none of the above has been written into the PRD. It is recorded here first because amending §1, §7 and Q6 is a substantive spec change that was offered and not yet approved. Also unverified: whether the four apps actually deliver notifications now — the OS-level permission was granted and confirmed, but each app's own in-app notification settings and Android's per-channel blocks sit underneath it and were not inspected. No real transaction was observed.
+
+### Re-verify the M0 build and capture path after a month idle
+**Type:** Added
+**Time:** 21:23 +08:00
+**Files:** — (runtime verification only)
+**Related:** §10 M0, §10 M1, FR-5
+
+`npx expo run:android` succeeded on the Samsung A52 after a month with no build, and capture was confirmed live rather than assumed. A synthetic notification posted via `cmd notification post` produced `captured com.android.shell … style=BigTextStyle title=present text=present`.
+
+**Why that one log line settles it:** the service logs `dropped — no JS listener attached` when the emitter is null and only reaches the field-presence log after that check passes. A `captured` line therefore proves the native listener is bound *and* the JS bridge is attached — the two halves M0 exists to demonstrate — rather than proving only that the APK compiles.
+
+**The notification-access grant survived reinstall.** `enabled_notification_listeners` still contains `com.zeyune.notifsync/expo.modules.notificationlistener.NotifSyncListenerService`. This was worth checking rather than assuming: a reinstall can leave the grant visible while the binding is broken, which is the failure `requestRebind()` exists for.
+
+**Also noted:** the first `expo run:android` failed with `No Android connected device found` — the phone was not plugged in, not a toolchain fault. And `npm audit` reports 17 vulnerabilities (10 moderate, 7 high); `npm audit fix --force` was **rejected, not deferred**, because it would bump packages past the `expo@~57.0.11` pin that the prebuild and native module are aligned to, and the resulting breakage presents as a native build error rather than a dependency one. `npx expo-doctor` is the right tool for version health here.
+
+**Not verified:** no row was observed in the app's own UI on screen — the conclusion that the JS listener received the notification is inferred from the service's logging order, not from looking at the device. `bigText=null` despite posting with `-S bigtext`, which is a quirk of the shell posting tool and was not investigated.
+
+### Correct three false statements in `CLAUDE.md`
+**Type:** Fixed
+**Time:** 21:09 +08:00
+**Files:** `CLAUDE.md`
+**Related:** §10 M0, §10 M1, §12 Q1, §12 Q2, §12 Q9
+
+The repository's orienting file still described the state of the project as of 2026-08-10 and was wrong in three ways, each of which would misdirect a session that trusted it. Milestone set to M1 with M0 recorded complete; the build-toolchain section replaced with a verified inventory; the "no code until Q1 is answered" gate replaced with a statement that the gate is cleared, plus what Q2 and Q9 actually block.
+
+**Why:** this is the file read first in every session, and all three errors pointed the same way — toward not building. It claimed M0 was the current milestone a month after M0 finished, claimed no JDK, SDK or `adb` were installed and that "nothing Kotlin has ever been compiled" when the listener had been running on a Samsung A52 since 2026-08-11, and carried a hard gate whose own premise the PRD had already recorded as false. A session opening this file would have concluded that implementation was blocked and that it could not build, which is the opposite of the true position.
+
+**Verified before writing, not assumed:** `java -version` returns OpenJDK 17.0.20 (Temurin), `adb version` returns 1.0.41, and `ANDROID_HOME` resolves to `C:\Users\Effie\AppData\Local\Android\Sdk`. The previous text was contradicted by the changelog's own history, but the replacement claim was checked against the machine rather than inferred from it.
+
+**Each correction says what it supersedes rather than silently replacing it**, so the file does not read as though it were always right. The retired gate in particular is marked retired rather than satisfied, with an instruction not to reinstate it without a matching PRD change — it was written when Q1 could still have returned "this category is not permitted", and it cannot return that any more.
+
+**Not verified:** the build toolchain was confirmed present, not confirmed working — no build was run this session, so it is unproven that `npx expo run:android` still succeeds after a month. Q9's collision claim is carried over from the PRD and still rests on search results rather than a first-party Play listing.
+
 ### Publish the repository to GitHub as `Zeyune/notisync`
 **Type:** Decided
 **Time:** 21:06 +08:00

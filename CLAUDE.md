@@ -6,14 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 NotifSync is an end-to-end encrypted notification relay between a user's own devices: an Android phone forwards selected notifications to a paired phone over a relay that only ever sees ciphertext. [notification-sync-prd.md](notification-sync-prd.md) is the spec and the source of truth for every requirement (FR-*) and open question (Q*) referenced below.
 
-**Current milestone: M0** — a capture spike proving the Kotlin `NotificationListenerService` can hand notifications to JS. No network, no crypto, no filtering, no foreground service.
+**Current milestone: M1 — the LAN loop.** Two devices, a direct connection over the local network, a notification captured on the Android sender appearing on device B. No encryption, no filtering, no relay. PRD §10 timeboxes it deliberately: it exists to validate the data shape and is **thrown away at M3**, so do not make it good.
+
+**M0 is complete** (2026-08-12). The Kotlin `NotificationListenerService` captures on a real Samsung A52 and hands notifications to JS, verified against live WhatsApp and Gmail traffic rather than synthetic ones.
 
 ## Commands
 
 All commands run from [app/](app/).
 
 ```bash
-npx tsc --noEmit                              # typecheck — the only check that runs without a JDK
+npx tsc --noEmit                              # typecheck — fastest check; no device needed
 npx expo prebuild --platform android          # regenerate android/ from app.json + modules
 npx expo run:android                          # build and install on a connected device
 npx expo start --dev-client                   # Metro, once a dev build is installed
@@ -44,16 +46,21 @@ The service is declared in the **module's own manifest**, not via a config plugi
 
 ## Build toolchain
 
-Node and npm are present. **A JDK, the Android SDK, and `adb` are not** — install Android Studio to get all three. Until then only `tsc`, `expo config`, `expo prebuild`, and autolinking checks can run; nothing Kotlin has ever been compiled.
+**The full toolchain is installed, and the Kotlin has been compiled and run on hardware.** Verified 2026-09-12: JDK 17.0.20 (Temurin), `adb` 1.0.41, `ANDROID_HOME` at `C:\Users\Effie\AppData\Local\Android\Sdk`, plus Node and npm. Every command above runs.
 
-## The gate: no code until Q1 is answered
+*This section previously said the JDK, SDK and `adb` were absent and that nothing Kotlin had ever been compiled. That stopped being true when M0 was built onto a device on 2026-08-11.*
 
-The PRD's milestone **M-1** is a compliance gate, and it blocks all implementation work. Two questions must be resolved first:
+## The compliance gate is cleared — build freely
 
-- **Q1** — Does Google Play permit this use case for `NotificationListenerService`, and what does review require? Unresolved. A rejection found later invalidates the distribution model, not just a feature.
-- **Q7** — Licensing and pricing. Determines whether §9.3's running-cost model has an answer at all.
+**M-1 closed on 2026-08-10. Nothing blocks implementation.** This section used to read "no code until Q1 is answered"; that rule is retired, not merely satisfied. Q1's premise — that notification access sits behind a permitted-use-case whitelist NotifSync might be excluded from — was **wrong**. There is no such list. What remains of Q1 is per-submission reviewer risk, which cannot be resolved in advance and therefore cannot gate code. Q7 answered Apache-2.0, free, free hosted relay; Q3 followed from it; Q8 answered `specialUse`.
 
-If asked to start building, say the gate is open and check whether it has been resolved outside the repo before writing code. Q8 (Android 14+ `foregroundServiceType`) and Q2 (crypto library) must be settled before M0 and M2 respectively — both affect the scaffold, not just later features.
+**Still open, and what each actually blocks:**
+
+- **Q2 — crypto library.** Blocks **M2**, not M1. Needs AEAD that is maintained, needs no native fork, and is callable from a Swift Notification Service Extension (FR-35) as well as from JS. That last constraint is the narrow one, and it is the easiest to forget until it invalidates a choice already built on.
+- **Q9 — product name.** A Play listing called "Notify Sync: Secure E2E Mirror" already collides in store search. The GitHub repo was created as `Zeyune/notisync` on 2026-09-12 — *without the `f`* — which sits closer to that collision, not further from it. Candidate recorded in the PRD: `noti-noti`. Cheap to change now, expensive once anything links to it.
+- Q4 (APNs under sustained load) is an M3 measurement; Q5 and Q6 are M4/M6 product calls. None gate current work.
+
+Do **not** reinstate a gate here without a matching PRD change.
 
 ## Constraints that shape every decision
 

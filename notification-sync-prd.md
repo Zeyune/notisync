@@ -26,6 +26,18 @@ Existing options each fail in a specific way:
 
 **The gap:** a purpose-built, cross-platform, end-to-end encrypted notification relay between *my own* devices, with real per-app filtering and a receiver that works on iOS.
 
+### 1.1 The primary use case is financial notifications, not game notifications
+
+*Added 2026-09-12, and it changes requirements rather than just colour.* The driving need is **not** stamina timers. It is **money movement** — a payment arriving in GCash, GoTyme, Maya or SeaBank — on a phone the user does not carry. Game notifications remain a real secondary case and the section above is kept as written, but where the two conflict the financial case wins.
+
+Three consequences, each carried into the requirement it affects:
+
+- **Missing one is expensive, so reliability is the product.** A missed raid costs nothing and a missed payment defeats the purpose. This promotes §10 M5's 72-hour soak test from hardening to the measurement that decides whether the product is usable at all.
+- **Late delivery is still valuable**, which inverts Q6's proposed default — see §12 Q6.
+- **The metadata exposure is more sensitive than §7 originally described**, because forwarding timing now correlates with income events rather than with gaming activity — see §7.
+
+This also makes FR-10's deny-by-default and the end-to-end encryption **load-bearing rather than principled**. Transaction amounts crossing a relay in readable form would be a materially different product with a materially different risk profile, which is the strongest argument yet for the architecture §7 already specifies.
+
 ## 2. Users
 
 - **Primary:** dual-phone users where one device is the "attention" device and the other is a background device generating time-sensitive alerts. Gaming phone + daily phone; work phone + personal phone; phone + tablet.
@@ -155,7 +167,9 @@ The server's job is deliberately tiny: hold device tokens, relay opaque blobs, f
 
 **`StatusBarNotification.key` must never leave the device.** It is absent from `ForwardedNotification` above and that absence is load-bearing, not incidental. The key embeds the app's own tag, and apps put identifiers there: Google Play services was observed on 2026-08-12 posting `a:GMSCORE_SYNC_RENDERER:…:117863126120006353924`, where the trailing field is a **Google account ID**, and both WhatsApp and Messenger embed a stable per-conversation identifier. Forwarding the key would therefore hand the relay a persistent account identifier and a conversation graph in plaintext metadata — a materially stronger exposure than the one §7 declares below, and one that no amount of payload encryption offsets. The key is useful on-device (see FR-8 and FR-20) and must stay there. The same applies to any diagnostic that transmits it.
 
-**Stated metadata exposure.** The relay cannot read notification text, but it *can* observe: device labels, push tokens, payload sizes, and the timing and volume of every forwarded notification. That is enough to infer when a user's gaming phone is active and roughly how busy it is. This is an accepted limit of the design, not an oversight, and §6.7's privacy policy must say so rather than claiming a stronger property than the architecture delivers.
+**Stated metadata exposure.** The relay cannot read notification text, but it *can* observe: device labels, push tokens, payload sizes, and the timing and volume of every forwarded notification. This is an accepted limit of the design, not an oversight, and §6.7's privacy policy must say so rather than claiming a stronger property than the architecture delivers.
+
+*Amended 2026-09-12 — the original wording understated this and is superseded.* It read: "enough to infer when a user's gaming phone is active and roughly how busy it is." That was written when §1's gaming framing was the whole story. Under §1.1, a user forwarding wallet apps gives the relay timing and volume data that correlates with **when they receive money and how often** — an income pattern, inferable from identical metadata without decrypting anything. Payload size may narrow it further, since a bank's notification format is consistent enough that size bands carry signal. Two consequences: §6.7's privacy policy must describe *this* exposure rather than the gaming one, and any future traffic-shaping or padding work (not in v1) should be evaluated against this threat rather than the weaker one. The architecture is unchanged; only the honest description of it is.
 
 ## 8. Technical approach
 
@@ -232,6 +246,12 @@ M0–M2 are the interesting technical risk. M5 is where the product lives or die
 4. **iOS push reliability** — APNs deprioritizes high-volume pushes to a single device. FR-35 avoids the worst of it (background-fetch throttling) but does not make alert pushes unlimited. Needs a real-world sustained-load test at M3 before committing to the iOS receiver as a headline feature.
 5. **Does the notification icon survive the trip?** Forwarding app icons means shipping image data through the relay, and pushes past the 4 KB limit into FR-17's fetch path far more often. Probably: app *name* only in v1, icon in v2.
 6. **What happens when phone 2 is offline?** Queue on the sender and deliver late, or drop? Late "stamina full" is worse than no notification. Probably: per-app TTL, defaulting to 15 minutes for game notifications.
+
+   **Amended 2026-09-12 — the mechanism survives, the default inverts.** The reasoning above generalised from game notifications, where staleness destroys value. Under §1.1 the primary case is financial, and a payment notification delivered an hour late is **still fully useful** — the money did arrive, and knowing is better than not knowing. A 15-minute default would silently discard exactly the notifications the product exists to deliver, and would do so in the failure mode that matters most: phone 2 offline for a stretch, which is precisely when the user is away from it.
+
+   **Measured 2026-09-12, and it constrains the implementation: the two devices' clocks disagree.** The first M1 forwarding run showed the A52 running roughly 10–20 ms *ahead* of the receiving machine — arrival time minus `postTime` came out negative. The magnitude is irrelevant; the direction is the point. A TTL check is the receiver comparing the sender's `postTime` against its own clock, so it inherits whatever skew exists between them. At milliseconds this is noise. On a phone whose clock has drifted by minutes — no NTP on a restricted network, a manually set clock, a dead battery losing time — a 15-minute TTL would silently discard live notifications or present long-dead ones as current, and nothing in the output would indicate a clock was responsible. Whatever TTL ships must either compute elapsed time on the **sender** and forward a remaining-lifetime value rather than an absolute timestamp, or carry enough information for the receiver to detect skew and refuse to enforce TTL when it is large. Not decided here; recorded so the naive subtraction is not written by default.
+
+   So: **per-app TTL is confirmed as the right mechanism, and a single global default is confirmed wrong.** Financial apps want a long or unbounded TTL; game notifications want a short one. Whether the shipped default is long-with-opt-out or short-with-opt-in is still open, and depends on FR-10's allowlist being the place the user already makes a per-app decision — if they are opting each app in by hand anyway, that is the natural place to set its TTL. Still unanswered: what the receiver shows for a notification delivered well after its `postTime`, since presenting a stale one as current is its own defect.
 7. **Licensing and pricing.** **Answered 2026-08-10. No longer blocking.**
 
    **Licence: Apache-2.0.** Permissive, App Store compatible, and carries an explicit patent grant. **GPL-3.0 was rejected on a hard constraint, not a preference:** GPLv3 forbids downstream parties imposing further restrictions, Apple's App Store terms impose exactly those, and the two are treated as incompatible in practice. Choosing it would have cost the iOS receiver — which is phone 1, the device the user actually looks at — so copyleft would have traded away the product's whole point. MPL-2.0 was the runner-up if a closed fork ever becomes a real concern; it is App Store compatible and file-level copyleft, so switching later is possible for new files but not retroactive.
@@ -259,6 +279,17 @@ M0–M2 are the interesting technical risk. M5 is where the product lives or die
 ---
 
 ## Revision history
+
+### v0.7 — 2026-09-12
+**Type:** Changed
+
+Recorded that the product's primary use case is **financial notifications**, not game notifications, and carried that through the three places it changes a requirement. Added **§1.1** stating the case and its consequences; amended **§7**'s stated metadata exposure, which understated what the relay can infer; amended **§12 Q6**, whose proposed default TTL inverts under the new primary case. No FR changed meaning and no FR was added or renumbered.
+
+**Why:** §1 was written around a gaming phone, and every downstream judgement inherited that framing. Three had drifted from the actual need. Q6's 15-minute default would discard payment notifications in exactly the situation the product exists for — phone 2 offline while the user is away from it — because the reasoning behind that number ("late stamina full is worse than nothing") does not transfer to money, where late is still useful. §7 told users the relay could infer gaming activity when in practice it can infer an income pattern from the same timing and volume data, which is a privacy claim that would have been wrong in the store listing and the privacy policy. And M5's soak test was scoped as hardening when it is the measurement deciding whether the product works: a dropped game notification costs nothing, a dropped payment notification is the whole failure.
+
+The architecture needed no change, which is the useful finding. FR-10's deny-by-default and the end-to-end design were already right; they are now load-bearing rather than principled.
+
+**Not verified:** the use case is a stated goal, not observed behaviour — no financial notification has been captured, forwarded, or seen by this project, and the four wallet apps had their OS-level notification permission granted on 2026-09-12 without any transaction being observed since. The claim that payload size carries signal for a bank's notification format is **reasoning, not measurement**; no size distribution has been collected for any app. Whether a stale notification should be presented differently on the receiver is raised in Q6 and left unanswered rather than decided here.
 
 ### v0.6 — 2026-08-12
 **Type:** Changed
