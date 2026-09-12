@@ -1,5 +1,21 @@
 ## 2026-09-12
 
+### Verify the M1 failure path on device; record misleading transport errors for FR-33
+**Type:** Added
+**Time:** 22:40 +08:00
+**Files:** — (runtime verification only)
+**Related:** §10 M1, FR-26, FR-33, §10 M5
+
+The receiver was stopped, notifications were posted, and the app's behaviour was read off a device screenshot rather than inferred. **The failure path works.** Failed rows render in red as `not forwarded — <error>`, capture continued unaffected, the UI did not hang, and forwarding recovered immediately when the receiver came back (`seq=73` arrived on the first post after restart).
+
+**FR-26's semantics survive failure, which is the result that matters.** The sender consumed sequence numbers 66–72 on sends that failed. A continuously running receiver would therefore have seen `65 → 73` and reported seven lost — and seven notifications genuinely never arrived. Failed sends *should* count as gaps, and they do. That is the property M5's soak test depends on: the gap count measures delivery, not send attempts.
+
+**The error text is misleading, and this is the finding worth keeping.** A dead receiver behind `adb reverse` reports `java.io.IOException: unexpected end of stream`, not `ECONNREFUSED` — because adb keeps its listener alive **on the phone**, so the TCP connection succeeds and then dies mid-stream when adb cannot reach the host process. The same condition over Wi-Fi would present as connection refused. One cause, two unrelated-looking messages, and the tunnel-specific one is the confusing one. **FR-33's diagnostics screen exists precisely to tell a user why delivery stopped**, so it must classify transport failures rather than surface the raw exception string, or it will report a dead receiver in language that describes neither the cause nor the fix.
+
+**Also observed:** the test-payload status line still read `sent ✓` from an earlier success while every send beneath it was failing. Harmless at M1 and not fixed, but the same staleness in FR-33 would be actively misleading, since a diagnostics screen is read exactly when something is wrong.
+
+**Not verified:** the notification-app path was exercised with `cmd notification post` from the shell, not with a financial notification, so failure behaviour under the §1.1 use case is inferred rather than observed. All of it ran over USB — the `ECONNREFUSED` claim for Wi-Fi is reasoning about how the transports differ, not a measurement, and no Wi-Fi failure has been produced. The rewritten gap detector still has not seen a real reordering event: the restarted receiver began with no history, so its first payload could not produce one.
+
 ### Forward a real financial notification; fix FR-26 gap detection to survive reordering
 **Type:** Fixed
 **Time:** 22:35 +08:00
