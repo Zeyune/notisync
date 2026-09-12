@@ -1,8 +1,9 @@
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AppState,
   FlatList,
+  Platform,
   Pressable,
   StyleSheet,
   Switch,
@@ -19,6 +20,7 @@ import NotificationListener, {
   CapturedNotification,
 } from "./modules/notification-listener";
 import { sendToReceiver, toForwarded } from "./lanForwarding";
+import { currentPairing, myPairingPayload, pairWith, unpair } from "./pairingState";
 
 /**
  * M2, first slice (see notification-sync-prd.md §10).
@@ -78,10 +80,20 @@ type ForwardState =
 /**
  * Identifies the sender in the payload (§7's `deviceLabel`).
  *
- * Hardcoded: at M2 this comes from the pairing flow, and inventing a settings
- * screen for it now would be building M6 inside M1.
+ * Read from the device rather than hardcoded, which it was until a second phone
+ * appeared and reported itself as "Samsung A52". That is not cosmetic: FR-26
+ * tracks sequence numbers **per device label**, so two senders sharing a label
+ * merge into one sequence stream and manufacture gaps out of nothing — the exact
+ * measurement M5's soak test depends on.
+ *
+ * A user-chosen label belongs to pairing (FR-4 shows device labels) and is not
+ * this file's job; the model name is a correct default until then.
  */
-const DEVICE_LABEL = "Samsung A52";
+const DEVICE_LABEL = (() => {
+  const constants = Platform.constants as { Model?: string } | undefined;
+  const model = constants?.Model?.trim();
+  return model ? model : `${Platform.OS} device`;
+})();
 
 function CaptureScreen() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -188,13 +200,20 @@ function CaptureScreen() {
     return () => sub.remove();
   }, [markForwarded]);
 
-  return (
-    <SafeAreaView style={styles.screen}>
-      <StatusBar style="auto" />
-
+  /**
+   * Everything above the capture list, rendered as the list's header.
+   *
+   * These cards used to be siblings of the `FlatList`, which meant they occupied
+   * fixed height outside any scroll container: once the pairing card was added
+   * the content became taller than the screen and nothing could be reached.
+   * `ListHeaderComponent` puts them inside the list's own scroll view, so the
+   * whole page scrolls as one and the list keeps its virtualisation.
+   */
+  const header = (
+    <>
       <View style={styles.header}>
         <Text style={styles.title}>NotifSync</Text>
-        <Text style={styles.subtitle}>M2 — AES-256-GCM, fixed dev key</Text>
+        <Text style={styles.subtitle}>M2 — AES-256-GCM, derived keys</Text>
       </View>
 
       <View style={styles.permissionCard}>
@@ -220,6 +239,8 @@ function CaptureScreen() {
           </Text>
         </Pressable>
       </View>
+
+      <PairingCard />
 
       <View style={styles.permissionCard}>
         <View style={styles.forwardRow}>
@@ -276,11 +297,18 @@ function CaptureScreen() {
           </Pressable>
         )}
       </View>
+    </>
+  );
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <StatusBar style="auto" />
 
       <FlatList
         data={items}
         keyExtractor={(item) => String(item.captureId)}
-        contentContainerStyle={items.length === 0 && styles.emptyContainer}
+        ListHeaderComponent={header}
+        keyboardShouldPersistTaps="handled"
         ListEmptyComponent={
           <Text style={styles.empty}>
             {enabled
@@ -327,6 +355,99 @@ function CaptureScreen() {
         )}
       />
     </SafeAreaView>
+  );
+}
+
+/**
+ * FR-1 / FR-2 pairing, via manual code entry.
+ *
+ * FR-2 lists manual entry as the fallback for when the camera is unusable, and
+ * it is built first here on purpose: it exercises the identical X25519 exchange
+ * while needing no `expo-camera`, no QR renderer, and no native rebuild, so the
+ * key agreement can be proven before any scanning UI exists. A QR screen is a
+ * presentation layer over this exact code path.
+ *
+ * The fingerprint is the point of the display. Both devices must show the same
+ * four bytes *crosswise* — this device's `send` equals the other's `recv`. If
+ * the derivation ever disagreed across devices, every downstream symptom would
+ * be an AEAD authentication failure at the far end, which points at the cipher
+ * rather than at pairing. Two numbers on two screens localises it immediately.
+ */
+function PairingCard() {
+  const [peerCode, setPeerCode] = useState("");
+  const [status, setStatus] = useState<string | null>(null);
+  const [pairing, setPairing] = useState(() => currentPairing());
+
+  // Public by design — the private half never leaves `pairingState`. Logged so
+  // it can be read off `adb logcat` while there is no QR code to scan.
+  const myCode = useMemo(() => {
+    const payload = myPairingPayload(Platform.OS === "android" ? "android" : "ios");
+    const json = JSON.stringify(payload);
+    console.log(`NotifSync pairing code: ${json}`);
+    return json;
+  }, []);
+
+  return (
+    <View style={styles.permissionCard}>
+      <Text style={styles.permissionLabel}>Pairing</Text>
+      <Text
+        style={[
+          styles.permissionValue,
+          pairing.paired ? styles.granted : styles.notGranted,
+        ]}
+      >
+        {pairing.paired ? `paired with ${pairing.peerDeviceId}` : "not paired"}
+      </Text>
+
+      {/* Which key is actually protecting the payload. Stated because an
+          unpaired device still encrypts — with a key published on GitHub — and
+          "encrypted" on its own would be a misleading thing to show. */}
+      <Text style={styles.keyNotice}>
+        {pairing.paired
+          ? `key: derived · ${pairing.fingerprint}`
+          : "key: PUBLIC development key — not secret"}
+      </Text>
+
+      <Text style={styles.codeLabel}>This device's code</Text>
+      <Text style={styles.code} selectable numberOfLines={3}>
+        {myCode}
+      </Text>
+
+      <TextInput
+        style={styles.input}
+        value={peerCode}
+        onChangeText={setPeerCode}
+        placeholder="Paste the other device's code"
+        autoCapitalize="none"
+        autoCorrect={false}
+        multiline
+      />
+      <Pressable
+        style={styles.buttonSecondary}
+        onPress={() => {
+          const result = pairWith(peerCode);
+          setStatus(result.ok ? "paired ✓" : `failed — ${result.error}`);
+          setPairing(currentPairing());
+        }}
+      >
+        <Text style={styles.buttonSecondaryText}>Pair</Text>
+      </Pressable>
+
+      {pairing.paired && (
+        <Pressable
+          style={styles.buttonSecondary}
+          onPress={() => {
+            unpair();
+            setPairing(currentPairing());
+            setStatus("unpaired");
+          }}
+        >
+          <Text style={styles.buttonSecondaryText}>Unpair</Text>
+        </Pressable>
+      )}
+
+      {!!status && <Text style={styles.testResult}>{status}</Text>}
+    </View>
   );
 }
 
@@ -379,6 +500,9 @@ const styles = StyleSheet.create({
   },
   buttonSecondaryText: { color: "#1f2937", fontWeight: "600" },
   testResult: { marginTop: 8, fontSize: 13, color: "#444" },
+  keyNotice: { marginTop: 4, fontSize: 12, color: "#666", fontWeight: "600" },
+  codeLabel: { marginTop: 12, fontSize: 12, color: "#666" },
+  code: { fontSize: 10, color: "#333", marginTop: 2 },
   forwardState: { marginTop: 4, fontSize: 11, fontWeight: "600" },
   listHeader: {
     flexDirection: "row",

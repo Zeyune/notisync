@@ -1,5 +1,49 @@
 ## 2026-09-12
 
+### Close the M2 loop with derived keys; fix an unscrollable layout and a hardcoded device label
+**Type:** Fixed
+**Time:** 23:18 +08:00
+**Files:** `app/App.tsx`, `app/pairingPeer.mts`, `tools/m1-receiver.mjs`, `.gitignore`
+**Related:** FR-2, FR-3, FR-4, FR-26, §8, §10 M2
+
+**FR-2 is verified on hardware, across two runtimes.** The Xiaomi paired against the Node peer and displayed `send a2e5ce15 · recv 237e3808`, matching the laptop's independently computed expectation exactly — then a second pairing reproduced it at `send 78b3f758 · recv 61256c34`. The phone derives with `@noble` under Hermes and the laptop with the same library under Node; identical output means the X25519 agreement, the HKDF derivation, and §8's crosswise direction mapping are correct on both sides. **Then the full path ran end to end:** payloads sealed on the phone with its *derived* send key were opened by the receiver with the matching derived half. The public development key is out of the path.
+
+**Supporting change:** `pairingPeer.mts` now writes its derived receive key to `tools/peer-session.json` and the receiver prefers that file over the development key. Without it the peer's secret died with the Node process, so a phone that had just paired could encrypt nothing the laptop could read — pairing would lock the receiver out rather than connect it. The file is gitignored; it is a throwaway session key for a development peer.
+
+**Two defects surfaced by using the thing, not by reading it.**
+
+*The app could not be scrolled.* The header cards were siblings of the `FlatList`, so they occupied fixed height outside any scroll container; once the pairing card was added the content exceeded the screen and the lower half became unreachable. They are now the list's `ListHeaderComponent`, so the page scrolls as one while the list keeps its virtualisation. Reported by Effie — it is invisible in a screenshot, and `adb input` is blocked on this device, so it could not have been caught from here.
+
+*Every payload claimed to come from "Samsung A52".* `DEVICE_LABEL` was hardcoded, and the Xiaomi dutifully reported itself as the Samsung. **This is not cosmetic:** FR-26 tracks sequence numbers *per device label*, so two senders sharing a label merge into one sequence stream and manufacture gaps from interleaving — corrupting precisely the measurement M5's soak test exists to produce. Now read from `Platform.constants.Model`. A user-chosen label belongs to pairing (FR-4 lists device labels) and is deliberately not done here.
+
+**Noted, because it contradicts an earlier entry:** identity did **not** regenerate across Fast Refresh — module-level state survived, and the pairing held. The 23:12 entry recorded a regeneration after a reload; both observations are real, so reload behaviour is inconsistent and must not be relied on either way. FR-3 persistence is still absent and remains the actual fix.
+
+**Verified:** `npx tsc --noEmit` clean; two independent pairings produced matching fingerprints on device; two encrypted test payloads decrypted with the derived key (`312B` each).
+
+**Not verified:** the scroll fix has not been confirmed by a human touching the screen — `adb input` is refused by HyperOS, and a screenshot cannot show scrollability. No notification from a real app has yet been forwarded under a derived key; only the built-in test payload has. The device label change is untested on the Samsung, which remains unplugged, so `Platform.constants.Model` has been exercised on exactly one device. No two-phone test has been run.
+
+### Install on the Xiaomi; add FR-2 manual pairing UI and wire derived keys into sealing
+**Type:** Added
+**Time:** 23:12 +08:00
+**Files:** `app/pairingState.ts`, `app/pairingPeer.mts`, `app/App.tsx`, `app/crypto.ts`, `app/tsconfig.json`
+**Related:** FR-1, FR-2, FR-3, FR-4, §8, §10 M1, §10 M2
+
+The second device is real: a **Redmi Note 12 Pro** (`rubypro`, Android 14, HyperOS 2.0) now runs the app, and it is already on Wi-Fi at `192.168.1.9` — the same `192.168.1.0/24` as the laptop. Added `pairingState.ts` (identity, pairing, session keys, unpair), a pairing card in `App.tsx`, and `pairingPeer.mts`, a Node stand-in for a second device. `crypto.ts` now seals with the derived send key when paired and falls back to the development key when not.
+
+**Pairing is built as FR-2's manual-entry path first, not QR.** FR-2 lists manual entry as the fallback for an unusable camera, and it exercises the identical X25519 exchange while needing no `expo-camera`, no QR renderer, and no native rebuild — so the key agreement gets proven before any scanning UI exists, and the JS hot-reloads. A QR screen is presentation over this same code path.
+
+**Confirmed on device rather than assumed:** the Xiaomi generated a real identity under Hermes and logged a 43-character base64url public key — exactly 32 bytes — which proves `expo-crypto`'s `getRandomBytes`, noble's `x25519.getPublicKey`, and the `btoa`-based base64url encoder all work in the React Native runtime. Those were three untested assumptions in the previous entry.
+
+**The pairing field originally demanded JSON, which was wrong and the device made it obvious.** Nobody transcribing a code by hand types `{"v":1,…}`. It now accepts a bare base64url public key as well — the QR path can carry the full payload, but the human path has to accept the single field that matters.
+
+**The UI states which key is protecting the payload**, showing `key: PUBLIC development key — not secret` when unpaired. An unpaired device still encrypts, with a key published on GitHub, and displaying only "encrypted" would be a misleading claim about a security property that does not exist yet.
+
+**Blocked on device, and it needs a person:** HyperOS refuses `adb shell input` with `SecurityException: Injecting input events requires INJECT_EVENTS`. MIUI gates input injection behind a separate *USB debugging (Security settings)* toggle that requires a Mi account. Until it is enabled, the Xiaomi's UI cannot be driven from the laptop and every interaction on that phone is manual.
+
+**Noted:** the Xiaomi already has notification access granted, so it can act as sender or receiver.
+
+**Not verified — the on-device derivation has never run.** `deriveSessionKeys` is proven across ten random pairs under Node, but no pairing has been completed on hardware, so the cross-runtime agreement between Hermes and Node is still untested; that is exactly what `pairingPeer.mts` exists to check and it could not be driven. Nothing has been encrypted with a derived key. **FR-3 is absent** — keys live in a module-level variable and are lost on reload, and identities regenerate every launch, so a "pairing" does not survive the app restarting. The pairing token is generated and never validated or expired. FR-4's unpair clears memory only. The Samsung was disconnected to attach the Xiaomi, so no two-phone test of any kind has been attempted.
+
 ### Add FR-2 key derivation with a self-test; catch a noble v2 API break before it reached the device
 **Type:** Added
 **Time:** 23:06 +08:00

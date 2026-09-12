@@ -9,6 +9,6 @@
     // explicit .ts import specifiers, both of which the app's config rejects.
     // Checked by running it (`node --experimental-strip-types
     // pairingKeys.selftest.mts`), which is a stronger check than tsc anyway.
-    "**/*.selftest.mts"
+    "**/*.mts"
   ]
 }

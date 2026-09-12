@@ -16,6 +16,7 @@
 
 import { createServer } from "node:http";
 import { createDecipheriv } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 /**
  * ⚠ DEVELOPMENT KEY — PUBLIC AND WORTHLESS. Mirrors app/crypto.ts. ⚠
@@ -28,6 +29,34 @@ const DEVELOPMENT_KEY = Buffer.from(
   "PgZO+T2I2lS82EC/U2REy7DqjlD5LWgJtTtd5/dRmRw=",
   "base64",
 );
+
+/**
+ * Prefers a real paired key over the development one.
+ *
+ * `app/pairingPeer.mts` writes the key it derived when standing in as a second
+ * device. Once the phone has paired, it seals with its derived send key and the
+ * development key stops working — so reading this file is what lets the receiver
+ * follow a pairing instead of being cut off by it.
+ *
+ * Absent means nobody has paired yet, which is the normal starting state rather
+ * than an error.
+ */
+function activeKey() {
+  try {
+    const session = JSON.parse(
+      readFileSync(new URL("./peer-session.json", import.meta.url), "utf8"),
+    );
+    const key = Buffer.from(session.receiveKey, "base64");
+    if (key.length !== 32) throw new Error(`key is ${key.length} bytes`);
+    console.log("Using the paired session key from tools/peer-session.json");
+    return key;
+  } catch {
+    console.log("No pairing found — using the public development key");
+    return DEVELOPMENT_KEY;
+  }
+}
+
+const KEY = activeKey();
 
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
@@ -63,7 +92,7 @@ function open(envelope) {
   const tag = combined.subarray(combined.length - TAG_BYTES);
   const ciphertext = combined.subarray(IV_BYTES, combined.length - TAG_BYTES);
 
-  const decipher = createDecipheriv("aes-256-gcm", DEVELOPMENT_KEY, iv);
+  const decipher = createDecipheriv("aes-256-gcm", KEY, iv);
   decipher.setAuthTag(tag);
   // `final()` throws if the tag does not verify — that is the authentication in
   // authenticated encryption, and it must never be caught and ignored.
