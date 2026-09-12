@@ -7,14 +7,18 @@
  * observe: device labels, push tokens, payload sizes, and timing. Every addition
  * to this file should be checked against that sentence before it is written.
  *
- * M3.1 is storage and addressing only. FCM delivery arrives in M3.2; until then
- * `/send` stores a blob and a receiver must poll `/blob/:id`, which is not the
- * shipping design but makes the storage half testable on its own.
+ * `/send` stores the ciphertext and then wakes the target with an FCM data
+ * message (FR-16). Small payloads ride inline on the push; larger ones carry
+ * only the blob id and the receiver collects them over HTTPS (FR-17).
  */
+
+import { sendPush } from "./fcm";
 
 export interface Env {
   DB: D1Database;
   BLOB_TTL_SECONDS: string;
+  /** Firebase service-account JSON, set with `wrangler secret put`. */
+  FCM_SERVICE_ACCOUNT: string;
 }
 
 /** X25519 public keys are 32 bytes, which is 43 base64url characters unpadded. */
@@ -173,9 +177,45 @@ async function handleSend(request: Request, env: Env): Promise<Response> {
     .bind(id, body.target, caller.public_key, body.ciphertext, Math.floor(Date.now() / 1000))
     .run();
 
-  // M3.2 sends the FCM push here. Until then the receiver must be told the id
-  // out of band, which is why M3.1 is testable but not yet the shipping design.
-  return json({ id }, 202);
+  const target = await env.DB.prepare("SELECT fcm_token FROM devices WHERE public_key = ?")
+    .bind(body.target)
+    .first<{ fcm_token: string | null }>();
+
+  if (!target?.fcm_token) {
+    // Stored but unreachable. Reported as 202 with a flag rather than an error:
+    // the payload is safely held and FR-32 will expire it, and the sender should
+    // not retry a send that succeeded. It is surfaced so an unregistered
+    // receiver is visible rather than looking like successful delivery.
+    return json({ id, pushed: false, reason: "target has no push token" }, 202);
+  }
+
+  // FCM caps a message at 4 KB. Measured payloads are 232-476 bytes, so almost
+  // everything rides inline and the round trip to fetch it is avoided; the blob
+  // stays stored regardless, so FR-17's fetch path works for the rest and an
+  // interrupted receiver can still collect what it missed.
+  const inline = body.ciphertext.length <= 2800;
+  const push = await sendPush(env.FCM_SERVICE_ACCOUNT, target.fcm_token, {
+    v: "1",
+    id,
+    ...(inline ? { p: body.ciphertext } : {}),
+  });
+
+  if (!push.ok) {
+    if (push.tokenInvalid) {
+      // The token will never work again; keeping it would fail every future
+      // send in exactly the same silent way.
+      await env.DB.prepare("UPDATE devices SET fcm_token = NULL WHERE public_key = ?")
+        .bind(body.target)
+        .run();
+    }
+    // Never log `push.error` verbatim: FCM echoes the registration token in some
+    // error bodies, and §7 does not put an operator-readable device token in the
+    // logs. The sender is told; the log is not.
+    console.log(`push failed for a device (tokenInvalid=${push.tokenInvalid})`);
+    return json({ id, pushed: false, reason: push.error }, 202);
+  }
+
+  return json({ id, pushed: true, inline }, 202);
 }
 
 /**

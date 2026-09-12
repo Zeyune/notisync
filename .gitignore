@@ -20,5 +20,12 @@ relay/.wrangler/
 # google-services.json identifies the Firebase project to the app.
 **/google-services.json
 **/service-account*.json
+# Firebase downloads its admin key as `<project>-firebase-adminsdk-<id>.json`,
+# which matches neither pattern above. Belt and braces: the key currently in
+# .env/ is otherwise protected by a single ignore line, and it can send pushes
+# to every device this app has registered.
+**/*firebase-adminsdk*.json
+.env
+.env/
 
 .env/

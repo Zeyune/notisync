@@ -1,5 +1,26 @@
 ## 2026-09-13
 
+### Relay sends FCM pushes; accepted by Google but not yet received by any device
+**Type:** Added
+**Time:** 01:07 +08:00
+**Files:** `relay/src/fcm.ts`, `relay/src/index.ts`, `.gitignore`
+**Related:** §7, §10 M3, FR-16, FR-17, FR-25, FR-30, FR-32, FR-33
+
+The relay can now wake a device. `relay/src/fcm.ts` mints an OAuth token by signing a JWT with the Firebase service-account key via Web Crypto — Workers has no Node crypto, and the legacy FCM server-key API no longer exists — and `/send` looks up the target's token and posts an FCM HTTP v1 message. Deployed and confirmed end to end on the server side: a send addressed to the Samsung's real public key returned `{"pushed": true, "inline": true}`, so the JWT signing, the token exchange and the FCM call all work from inside the Worker.
+
+**The push is data-only, at high priority, and both choices are architectural.** A notification-type message is rendered by the system before any app code runs, which would show the user raw ciphertext; a data message hands the payload to the app to decrypt first — the Android counterpart of FR-35's Notification Service Extension. Normal priority would let FCM batch messages until the device leaves Doze, which for a notification relay is indistinguishable from not delivering.
+
+**Payloads ride inline on the push when they fit.** Measured notifications are 232–476 bytes against FCM's 4 KB cap, so the common case avoids a fetch round trip entirely; the blob is stored regardless, so FR-17's fetch path covers the rest and an interrupted receiver can still collect what it missed.
+
+**Invalid tokens are distinguished from transient failures and cleared.** FCM answers 404 UNREGISTERED, or 400 INVALID_ARGUMENT, for a token that can never work again; keeping it would fail every future send in exactly the same silent way, which is the failure FR-25's heartbeat and FR-33's diagnostics exist to surface. A send to a device with no token returns 202 with `pushed: false` rather than an error — the payload is safely stored and the sender must not retry a send that succeeded, but an unreachable receiver must not look like successful delivery either.
+
+**FCM error bodies are never logged verbatim.** They can echo the registration token, and §7's stated exposure does not include an operator-readable device token sitting in logs. The sender is told the detail; the log records only that a push failed and whether the token was invalid.
+
+**A credential scare that turned out fine, recorded because the margin was thin.** The Firebase admin key was placed at `.env/notifsync-593ef-firebase-adminsdk-fbsvc-*.json` — inside a **public** repository. It was protected, but only because `.env` happens to be a *directory* and `.gitignore` contained `.env/` with a trailing slash; had it been a loose file at `.env`, that rule would not have matched it. The filename Firebase generates also matches neither `service-account*.json` nor `google-services.json`, the two patterns added earlier for exactly this purpose. `.gitignore` now covers `**/*firebase-adminsdk*.json` and bare `.env` as well. Confirmed never committed, and confirmed not staged by `git add -A`.
+
+**Not verified — nothing has been received.** FCM **accepting** a message is not delivery: no handler exists in the app for a data-only push, so the message was dropped silently on arrival, and no log line on the device confirms it arrived at all. Delivery to a killed app, decryption, and display (FR-19) are the whole of M3.3's client half and are unwritten. The Xiaomi is unplugged and unregistered, so no device-to-device delivery has been attempted. The hourly FR-32 sweep still has not been observed firing in production. `inline: true` was reported by the relay but never read back by a receiver, so the inline path is unproven beyond the relay's own decision to take it.
+
+
 ### Deploy the relay; device registered over public HTTPS with its FCM token
 **Type:** Added
 **Time:** 01:04 +08:00
