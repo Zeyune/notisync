@@ -1,5 +1,30 @@
 ## 2026-09-12
 
+### Verify FR-2 device-to-device between two phones, against a prediction made in advance
+**Type:** Added
+**Time:** 23:22 +08:00
+**Files:** — (runtime verification only)
+**Related:** FR-1, FR-2, FR-3, §8, §10 M2
+
+**The Samsung A52 and the Redmi Note 12 Pro completed a real X25519 pairing.** Each generated its own identity on its own device; only public keys crossed between them, transcribed by hand; neither transmitted a secret and the laptop mediated nothing. Results:
+
+```
+Samsung   send 13d32d71 · recv 2a995358
+Xiaomi    send 2a995358 · recv 13d32d71
+```
+
+Exact mirror image, which is §8's separate-key-per-direction rule working: each device's send key is the other's receive key.
+
+**The mirror values were predicted before the second device paired, not observed and then explained.** The Samsung was paired first and its fingerprint recorded; the swapped pair was stated as the expected Xiaomi result; the Xiaomi then produced exactly that. This matters because a fingerprint comparison made *after* seeing both is nearly unfalsifiable — any pair of numbers can be narrated into agreement. Committing to the values first made the check capable of failing.
+
+**This supersedes the previous entry's verification in an important way.** Earlier pairings were phone-against-Node: the same `@noble` source running in two runtimes, which proves cross-runtime determinism but shares an implementation. This run is two independent devices, two independently generated identities, and no laptop involvement in the exchange at all. FR-2 is now demonstrated as specified rather than simulated.
+
+**Also established this session:** all three machines are on one subnet — laptop `192.168.1.11`, Samsung `192.168.1.10`, Xiaomi `192.168.1.9` — after the Samsung joined the router's **2.4 GHz SSID**, which is a different network name from the 5 GHz one the laptop and Xiaomi use. And **Windows Firewall does not block the receiver**: a POST from the Samsung to `192.168.1.11:8787` over Wi-Fi returned HTTP 400 (`bad envelope`, the body being `{}`) rather than timing out, so the packet arrived and was answered. The firewall rule recorded as a likely blocker on 2026-09-12 21:35 is **not** needed.
+
+**Verified:** both fingerprints read off device screenshots; the Samsung's half was driven via `adb input` and the Xiaomi's entered by hand, since HyperOS still refuses input injection.
+
+**Not verified:** nothing has yet been *sent* between the two phones. They hold matching keys and no traffic has crossed — the app has no receiver mode, so phone-to-phone delivery remains unimplemented, and the laptop receiver still holds the older Node-peer session key rather than either phone's. The Wi-Fi transport test was set up and **not run**: no notification has crossed the radio, so M1's outstanding item stands. FR-3 persistence is still absent, so both pairings are lost on app restart. Device labels were not re-checked after the `Platform.constants.Model` fix, so it remains unconfirmed that the two phones now report distinct labels.
+
 ### Close the M2 loop with derived keys; fix an unscrollable layout and a hardcoded device label
 **Type:** Fixed
 **Time:** 23:18 +08:00
