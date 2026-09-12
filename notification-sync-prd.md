@@ -242,6 +242,24 @@ M0–M2 are the interesting technical risk. M5 is where the product lives or die
 
    **Not verified:** the comparable listings were observed via search results, not confirmed first-party — Play listing pages do not render to automated fetching. A developer-community thread on this exact policy question could not be read. Neither changes the documentation finding, which came from Play's own policy pages.
 2. **Crypto library** — which RN crypto library is currently maintained, gives AEAD without a native fork, and can be called from a Swift Notification Service Extension as well as from JS? The extension requirement (FR-35) narrows the field and was not a constraint in v0.1. Needs research; the RN crypto ecosystem churns.
+
+   **Answered 2026-09-12. No longer blocking M2.** Three libraries, split by where each operation runs:
+
+   | Operation | Frequency | Library |
+   |---|---|---|
+   | AEAD encrypt/decrypt | every notification | **`expo-crypto`** (AES-256-GCM) on JS; **CryptoKit** `AES.GCM` in the iOS extension |
+   | X25519 key agreement (FR-1, FR-2) | once per pairing | **`@noble/curves`** |
+   | HKDF, for §8's per-direction keys | once per pairing | **`@noble/hashes`** |
+
+   **The question's premise expired.** It was written around "the RN crypto ecosystem churns", and the answer for the AEAD half is now a **first-party Expo module**: SDK 55 added `aesEncryptAsync`/`aesDecryptAsync` to `expo-crypto`, and this project is on SDK 57. No third-party dependency, no native fork, and no third-party maintenance risk on the hot path. Defaults are a 12-byte IV and 16-byte tag with AAD supported, and `combined()` emits `IV ‖ ciphertext ‖ tag`, documented as a portable layout for compatibility with other AES-GCM implementations.
+
+   **The extension constraint is weaker than it looked, and this is what unlocked the answer.** FR-35's Notification Service Extension only ever **decrypts** — pairing happens in the main app, and the extension reads the shared key from the Keychain access group. So the extension needs AEAD alone, which Apple's CryptoKit provides with **zero dependencies**. That matters beyond tidiness: an NSE runs under a hard memory cap, so a dependency-free decrypt path has real operational value. Q2 assumed the extension had to reach every primitive; it does not.
+
+   **Key agreement stays in pure JS deliberately.** `expo-crypto` offers no X25519, ECDH or HKDF, so `@noble/curves` and `@noble/hashes` cover them: audited, pure TypeScript, no native module at all, dependencies minimised and pinned. Pure-JS elliptic curve work would be the wrong choice on a per-notification path and is the right one at **once per pairing**, where it removes native-fork risk entirely. The `getRandomValues` polyfill these need is already provided by `expo-crypto`.
+
+   **The one assumption that must be tested before M2 builds on it:** that `expo-crypto`'s `combined()` output opens directly as a CryptoKit `AES.GCM.SealedBox`. Both sides document a 12-byte nonce, a 16-byte tag and the same concatenation order, but **this is documentation agreement, not a measured round trip.** Write the interop test — encrypt on Android, decrypt in Swift — before any other M2 work depends on the format. A mismatch discovered later surfaces inside a Notification Service Extension, which is among the hardest places in the product to debug.
+
+   *Not verified: no code has been written or run against any of these three libraries in this project, and `expo-crypto`'s AES functions have not been exercised on device. Library maintenance status was read from documentation and release notes, not from inspecting the source. The per-direction key derivation in §8 is specified but its info-string scheme is not yet designed.*
 3. **Self-host or hosted relay?** **Answered 2026-08-10 as a consequence of Q7:** both. Hosted by default and free under a fair-use quota, with a self-host URL configurable in settings and no feature difference between them. Self-host-only was rejected because success criterion 5 requires a non-technical user to pair unaided, and that user cannot run a server. Cheap either way given §8's replaceable-backend design.
 4. **iOS push reliability** — APNs deprioritizes high-volume pushes to a single device. FR-35 avoids the worst of it (background-fetch throttling) but does not make alert pushes unlimited. Needs a real-world sustained-load test at M3 before committing to the iOS receiver as a headline feature.
 5. **Does the notification icon survive the trip?** Forwarding app icons means shipping image data through the relay, and pushes past the 4 KB limit into FR-17's fetch path far more often. Probably: app *name* only in v1, icon in v2.
@@ -279,6 +297,17 @@ M0–M2 are the interesting technical risk. M5 is where the product lives or die
 ---
 
 ## Revision history
+
+### v0.8 — 2026-09-12
+**Type:** Changed
+
+Answered **§12 Q2**, the last question gating M2. AES-256-GCM via `expo-crypto` on JS and CryptoKit in the iOS extension; `@noble/curves` for X25519 and `@noble/hashes` for HKDF at pairing. No FR changed meaning and none were added.
+
+**Why:** Q2 was the only open item blocking M2, and it had been carried since v0.1 on the assumption that it needed research into a churning third-party ecosystem. Two things had changed underneath it. Expo SDK 55 added AES-GCM to `expo-crypto`, so the AEAD half is answered by a first-party module already present in this project's SDK — the maintenance risk Q2 was written to avoid does not apply. And re-reading FR-35 showed the Notification Service Extension only decrypts, since pairing runs in the main app and the extension reads the shared key from the Keychain access group; the extension therefore needs AEAD alone, which CryptoKit provides with no dependencies. Q2 had assumed the extension needed access to every primitive, and that assumption was what made the question look hard.
+
+The split between native AEAD on the per-notification path and pure-JS key agreement once per pairing is deliberate: performance where it is called constantly, zero native-fork risk where it is called twice.
+
+**Not verified — and one item is load-bearing.** No code has been written or run against any of the three libraries, and `expo-crypto`'s AES functions have not been exercised on device. Critically, **the claim that `expo-crypto`'s `combined()` output opens as a CryptoKit `AES.GCM.SealedBox` rests on both sides' documentation agreeing about nonce length, tag length and concatenation order — not on a measured round trip.** Q2 records that the interop test must precede any M2 work depending on the format, because a mismatch would surface inside a Notification Service Extension. Library maintenance status was read from release notes and documentation rather than source. §8's per-direction key derivation is specified but its info-string scheme is undesigned.
 
 ### v0.7 — 2026-09-12
 **Type:** Changed

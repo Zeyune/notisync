@@ -1,5 +1,23 @@
 ## 2026-09-12
 
+### Answer Q2: pick the crypto stack and unblock M2
+**Type:** Decided
+**Time:** 22:57 +08:00
+**Files:** `notification-sync-prd.md`
+**Related:** §12 Q2, §8, FR-1, FR-2, FR-35, §10 M2
+
+Q2 is answered and M2 is unblocked. AEAD is AES-256-GCM via **`expo-crypto`** in JS and **CryptoKit** `AES.GCM` in the iOS Notification Service Extension; key agreement is X25519 via **`@noble/curves`** with HKDF from **`@noble/hashes`**, both at pairing only. Written into the PRD as Q2's answer with revision entry v0.8.
+
+**Why the question turned out easier than it was written.** Q2 dates from v0.1 and was framed around a churning third-party RN crypto ecosystem. Two premises had since expired. Expo SDK 55 added `aesEncryptAsync`/`aesDecryptAsync` to `expo-crypto`, and this project is on SDK 57 — so the AEAD half is a first-party module already in the SDK, carrying none of the maintenance risk the question existed to avoid. And re-reading FR-35 showed **the extension only decrypts**: pairing runs in the main app, the extension reads the shared key from the Keychain access group, so it needs AEAD alone rather than every primitive. CryptoKit supplies that with zero dependencies, which matters under an NSE's hard memory cap. The assumption that the extension needed the full primitive set was what made Q2 look hard.
+
+**The native/JS split is by call frequency, not preference.** AEAD runs per notification and is native on both platforms. X25519 and HKDF run twice in a pairing's lifetime, where pure JS costs nothing measurable and removes native-fork risk entirely. `@noble/*` is audited, pure TypeScript, with pinned and minimal dependencies; the `getRandomValues` polyfill it needs under React Native is already provided by `expo-crypto`.
+
+**Rejected without deep comparison, and stated as such:** libsodium bindings, `react-native-quick-crypto`, and implementing AEAD natively in the existing Kotlin module were all viable and none were evaluated in depth. Effie chose to lock the stack in rather than widen the search, on the grounds that a first-party module plus an audited pure-JS library already satisfies every constraint Q2 names. Recorded so the alternatives are visible if the interop test below fails.
+
+**The one load-bearing unknown is flagged in the PRD rather than smoothed over.** That `expo-crypto`'s `combined()` output opens directly as a CryptoKit `AES.GCM.SealedBox` rests on **both sides' documentation agreeing** about a 12-byte nonce, a 16-byte tag, and `IV ‖ ciphertext ‖ tag` ordering — not on a round trip anyone has run. Q2 now requires that interop test before any M2 work depends on the format, because a mismatch surfaces inside a Notification Service Extension, which is among the hardest components in the product to debug.
+
+**Not verified:** no code has been written or run against any of the three libraries, and `expo-crypto`'s AES functions have not been exercised on device in this project. Library maintenance status and API shapes were read from vendor documentation and release notes rather than from source. §8's requirement of a separate key per direction is specified but its HKDF info-string scheme is undesigned.
+
 ### Verify the M1 failure path on device; record misleading transport errors for FR-33
 **Type:** Added
 **Time:** 22:40 +08:00
