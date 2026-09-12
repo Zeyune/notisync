@@ -1,5 +1,45 @@
 ## 2026-09-12
 
+### Forward real Gmail and Messenger notifications over Wi-Fi; FR-36 and FR-26 hold in the live pipeline
+**Type:** Added
+**Time:** 23:47 +08:00
+**Files:** — (runtime verification only)
+**Related:** §1.1, §7, §10 M1, FR-7, FR-8, FR-26, FR-36
+
+Ten payloads crossed Wi-Fi encrypted under the persisted derived key and decrypted correctly, including a Gmail message (`256B`) and a Messenger message (`256B`), both carrying sender and content intact. Latencies ranged `+247ms` to `+380ms`.
+
+**Messenger is the structurally important one.** It uses `MessagingStyle`, the same notification shape WhatsApp and the wallet apps use, so it stands in for a GoTyme notification far better than SystemUI does. A real financial notification could not be produced — the counterparty was unavailable — so §1.1's use case remains untested end to end, but the notification *shape* it will arrive in has now been through the full encrypted path.
+
+**FR-36 fired in the live pipeline, not in a lab.** Gmail posted its group summary 7ms before the real message, at `id=0` with a matching tag — precisely the pattern measured on 2026-08-12 and distinct from WhatsApp's same-id/null-tag form. The summary was skipped and the message captured. Without it the receiver would have shown a blank notification beside every real one, doubling both traffic and FR-9's rate-limit consumption.
+
+**FR-26 is clean over the radio.** Sequence numbers 1–10 arrived contiguous, with no gaps and no reordering. That is a meaningful contrast: the out-of-order races that motivated rewriting the gap detector earlier tonight happened over the USB tunnel, so reordering is not an artifact of the transport being slow.
+
+**FR-7's cost is now measurable in payloads rather than captures: seven of the ten deliveries were SystemUI charging notices — 70% of encrypted traffic was noise**, re-posting every 1–2 minutes while the phone charged. Each one costs a full AES-GCM seal, a network round trip and a sequence number. This supersedes nothing, but it is the first measurement of FR-7's waste *after* encryption rather than at capture.
+
+*Notification contents are deliberately not reproduced here — this file is committed to a public remote, and the payloads carried a correspondent's name and personal message text.*
+
+**Not verified:** no financial notification has crossed the path, so §1.1 remains unproven end to end. Ten payloads over a few minutes says nothing about sustained behaviour, and all of it ran with the phone plugged in, screen on, app foregrounded — none of the conditions M5's soak test exists to measure. The Xiaomi is still uninvolved and unpaired; no traffic has passed between the two phones.
+
+### Complete M1: forward a notification over Wi-Fi under a persisted derived key
+**Type:** Added
+**Time:** 23:38 +08:00
+**Files:** — (runtime verification only)
+**Related:** §10 M1, §10 M2, FR-2, FR-3, FR-4, FR-26
+
+**M1 is complete.** A notification captured on the Samsung was sealed, sent over the local network, and decrypted on the laptop:
+
+```
+[1] seq=1 SM-A526B · 232B · +349ms
+```
+
+**The USB tunnel was removed before the test, deliberately.** `adb reverse --remove tcp:8787` left only Metro's `tcp:8081`, so `127.0.0.1:8787` leads nowhere on that phone and the sole possible route was `192.168.1.10 → 192.168.1.11` across the radio. Without removing it, a payload arriving over the cable would be indistinguishable from one arriving over Wi-Fi, and the test would have proved nothing. This closes the item outstanding since 21:35, when the receiver address was defaulted to the tunnel precisely so the shape could be validated before the transport.
+
+**Three previously unverified things are settled by that one line.** The device label reads `SM-A526B`, read from `Platform.constants.Model` — the hardcoded "Samsung A52" fix, recorded as unverified at 23:18, now confirmed, which matters because FR-26 tracks sequence numbers per label. The payload was sealed with a **persisted** derived key, one that survived the force-stop tested minutes earlier, so FR-3 storage feeds the live encryption path rather than merely surviving in isolation. And the full chain — capture, derive, seal, transmit, decrypt — ran end to end with no cable and no development key anywhere in it.
+
+**FR-4's unpair was exercised as part of the setup** and behaved correctly: the pairing cleared, the key indicator reverted to `PUBLIC development key — not secret`, and the device kept its own identity (`F2UCRJq0…` unchanged), which is what the narrower unpair semantics recorded at 23:36 intended. Re-pairing to the Node peer then produced `send 443e247e · recv ee1f3d84`, matching the laptop's advance prediction for the third time.
+
+**Not verified:** the notification was synthetic, posted via `cmd notification post` from the shell — **no financial notification has crossed Wi-Fi**, which is §1.1's actual use case. Only one payload was sent, so nothing is known about sustained Wi-Fi behaviour, loss, or reordering over the radio as opposed to the cable; the `+349ms` figure is a single sample and still carries the clock skew recorded against Q6. The Xiaomi was not involved: it remains unpaired after reinstall, and **no traffic has ever passed between the two phones**, which still requires a receiver mode the app does not have. The truncated title and body (`Over` / `air`) are `adb shell` mangling the test command's quoting, not a capture defect.
+
 ### Implement FR-3: persist identity and pairing to Keystore/Keychain
 **Type:** Added
 **Time:** 23:36 +08:00
