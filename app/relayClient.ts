@@ -19,15 +19,18 @@ const RELAY_URL = "notifsync.v1.relay.url";
 const DEVICE_SECRET = "notifsync.v1.relay.secret";
 
 /**
- * Development default: the laptop running `wrangler dev` on the local network.
+ * The deployed relay.
  *
- * This is a *stepping stone*, not the product — it still requires both devices
- * on one network, which is the very limitation M3 removes. It exists so M3.2 and
- * M3.3 can be built and tested before a Cloudflare account exists; **M3.4
- * replaces it with the deployed Worker URL**, and only then is the off-network
- * claim actually true.
+ * HTTPS and publicly routable, which is what makes the off-network claim real:
+ * the sender no longer needs to share a network with the receiver, or with this
+ * laptop. It also removed a whole class of local problems — Windows Firewall was
+ * silently dropping inbound connections to `wrangler dev` on 8788, and a LAN
+ * address changes with DHCP.
+ *
+ * Overridable per device via the Relay card, which is how a self-hosted relay
+ * (§12 Q3, answered as "both") will be pointed at without a rebuild.
  */
-const DEFAULT_RELAY_URL = "http://192.168.1.11:8788";
+const DEFAULT_RELAY_URL = "https://notifsync-relay.johnkenneth-tan-dev.workers.dev";
 
 let cachedSecret: string | null = null;
 let cachedUrl: string | null = null;

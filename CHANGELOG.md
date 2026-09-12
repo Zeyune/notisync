@@ -1,5 +1,28 @@
 ## 2026-09-13
 
+### Deploy the relay; device registered over public HTTPS with its FCM token
+**Type:** Added
+**Time:** 01:04 +08:00
+**Files:** `app/relayClient.ts`, `relay/wrangler.toml`
+**Related:** §7, §8, §10 M3, FR-16, FR-32, §12 Q3
+
+The relay is live at `https://notifsync-relay.johnkenneth-tan-dev.workers.dev`, with D1 bound and the hourly FR-32 sweep registered as a cron trigger. The Samsung registered against it over public HTTPS and its FCM token is stored.
+
+**Verified against production, not inferred from local behaviour:** all 19 smoke-test checks pass against the deployed Worker backed by real D1, and the device row was read back directly — `public_key F2UCRJq0…`, a 142-character FCM token, served from Cloudflare's **SIN** colo in the APAC region. The UI claiming "registered" was not taken as evidence; the database was queried.
+
+**This removes the LAN dependency for the sender→relay hop.** The phone reaches the relay from the internet rather than from the local network, which also disposed of two problems rather than working around them: Windows Firewall silently dropping inbound connections to `wrangler dev` on 8788, and a LAN address that moves with DHCP. **No firewall rule was needed in the end** — the earlier instruction to add one is superseded.
+
+**Two stumbles worth recording because they cost time and will recur.**
+
+*Wrangler's own onboarding link 404s.* It points at `/workers/onboarding`, a path the 2026 dashboard no longer serves. The `workers.dev` subdomain already existed and was visible under **Compute → Workers & Pages → Account details**; there is no `wrangler subdomain` command in v4, so the dashboard is the only route.
+
+*The first deploy's TLS handshake failed from both curl and Node* (`ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE`, curl exit 35). Nothing was wrong — a newly created `workers.dev` subdomain takes about a minute to provision its certificate. It resolved on its own. Recorded so the next occurrence is not debugged as a code fault.
+
+**`DEFAULT_RELAY_URL` now points at the deployed Worker** and remains overridable per device from the Relay card, which is the mechanism a self-hosted relay (§12 Q3, answered as "both") will use without needing a rebuild.
+
+**Not verified — the relay still sends no pushes.** `FCM_SERVICE_ACCOUNT` is not set, so the Worker has never called FCM and `/send` only stores a blob. No notification has been delivered through the relay. Only the Samsung is registered; the Xiaomi is unplugged and does not have this build. The hourly cron has not been observed firing, so the FR-32 sweep remains unexercised in production. The `/send`, `/blob` and `/ack` paths are exercised only by the smoke test using fake device keys, never by the app.
+
+
 ### M3.2 — FCM token acquisition working on device; relay deployment blocked on a subdomain
 **Type:** Added
 **Time:** 00:58 +08:00
