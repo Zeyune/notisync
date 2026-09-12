@@ -1,3 +1,54 @@
+## 2026-09-13
+
+### M3.1 — relay skeleton on Cloudflare Workers + D1, with a 19-check smoke test
+**Type:** Added
+**Time:** 00:33 +08:00
+**Files:** `relay/wrangler.toml`, `relay/schema.sql`, `relay/src/index.ts`, `relay/smoke-test.mjs`, `.gitignore`
+**Related:** §7, §8, §9.3, §10 M3, FR-17, FR-32
+
+First slice of M3. A Cloudflare Worker backed by D1 with `POST /register`, `POST /send`, `GET /blob/:id`, `POST /ack`, `GET /health`, and an hourly scheduled sweep. Runs locally under `wrangler dev`; no Cloudflare account is needed yet.
+
+**Verified, not assumed:** all 19 smoke-test checks pass against the running Worker, including every authorisation refusal. `relay/smoke-test.mjs` is committed rather than thrown away, because the interesting failures here are authorisation ones and they are silent unless something asserts on them — a blob readable by the wrong device would look exactly like a working relay.
+
+**A departure from the approved plan, made deliberately and before writing it.** The plan's schema listed `seq` as a column on `blobs`. That is wrong: at M2 the sequence number was deliberately moved *inside* the ciphertext so the relay could not keep an ordered per-device count of a user's notifications, which under §1.1's financial use case would be a count of money events. The column is not there, and `schema.sql` says why so it is not added later for delivery bookkeeping.
+
+**Design decisions worth recording:**
+
+- **Devices are addressed by their X25519 public key.** No second identifier exists, and pairing already distributes the address — so a paired sender inherently knows where to send, with no extra field in the pairing payload. The key is public by definition and gives the relay no ability to decrypt.
+- **Unauthenticated outcomes are indistinguishable.** "No such device" and "wrong secret" both return a bare 401, and a blob addressed elsewhere returns 404 rather than 403 — otherwise the relay becomes an oracle for which public keys are registered and which blob ids exist.
+- **Secret comparison is constant-time.** A plain `===` on a bearer token exits at the first differing byte, leaking the token prefix by prefix across many attempts.
+- **Acknowledgement is idempotent.** A receiver retrying an ack after a dropped response must not see an error.
+- **Payloads above 64 KB are refused.** Measured notifications were 232–476 bytes; the cap leaves room for FR-17 while making the relay useless as free general-purpose storage, which §9.3 names as the real cost risk.
+- **The sweep logs a count only** — never ids or targets. §7's stated exposure does not include an operator-readable record of who was sent what, and logs are part of that.
+
+**`.gitignore` extended** to cover `relay/.wrangler/` (local miniflare state, which holds real device secrets and ciphertext from testing), `relay/node_modules/`, and — before either exists — `google-services.json` and `service-account*.json`. This repository is public, and the FCM service-account key is the one credential in M3 that grants real authority: it can push to every device the app has ever registered.
+
+**Not verified:** nothing has been deployed — `database_id` in `wrangler.toml` is still a placeholder, no Cloudflare account is connected, and the Worker has only ever run under local miniflare, so real D1 behaviour, cron triggering and production limits are all untested. **No push is sent**: `/send` stores a blob and returns an id, and a receiver would currently have to be told that id out of band, which is M3.2's job. The scheduled sweep has never fired — the hourly cron was not waited for and the TTL path is unexercised. No app code calls any of this yet.
+
+### Approve and record the M3 implementation plan
+**Type:** Decided
+**Time:** 00:06 +08:00
+**Files:** `notification-sync-m3-plan.md`
+**Related:** §8, §9.3, §10 M3, §12 Q3, §12 Q4, FR-16, FR-17, FR-30, FR-32, FR-35
+
+Planned M3 before writing any of it, at Effie's request — *"i want to plan the shit and have a blueprint before starting so we would agree to everything instead of you doing shit that i never agree upon."* Three decisions were taken and the whole plan written to `notification-sync-m3-plan.md`, committed to the repository rather than left in a session-local scratch file.
+
+**Relay host: Cloudflare Workers + D1.** This **supersedes §8's** naming of Supabase as "the obvious candidate". Supabase's free tier **pauses a project after 7 days of inactivity**; for a relay used daily that would rarely trigger, but the failure is silent — notifications stop and nothing says why. FR-25's heartbeat and FR-33's diagnostics exist precisely because silent cessation is this product's worst outcome, so an infrastructure component that fails that way by design works against the requirement. Cloudflare's allowance is also ~6× larger: 100k requests **per day** against 500k Edge Function invocations **per month**.
+
+**A correction made during planning, before it could become a mistake:** Workers KV was recommended first, on the strength of its TTL implementing FR-32's expiry for free. Checking the actual limits showed KV's free tier permits **1,000 writes per day** — and the relay writes one row per notification. D1 allows **100,000 row-writes per day** on the same plan. The recommendation was wrong and was corrected before any code existed. Effie's question — whether Supabase had a comparable cap — is what prompted the check.
+
+**Scope: Android → Android only.** The iOS receiver and FR-35's Notification Service Extension are deferred to a later milestone rather than blocking M3, because they need a Mac to build and a $99/yr Apple Developer membership, neither of which exists. §10 M3 as written includes iOS; this narrows it deliberately.
+
+**Push transport: direct FCM** from our own relay, as §8 specifies. Expo's Push Service was rejected despite being far less setup: every push would route through Expo's servers, putting a third party in the path of a product whose pitch is that there is not one (FR-30). Payloads would stay ciphertext, so the exposure is metadata only — but §7 already concedes enough metadata without adding a party to see it.
+
+**One deviation from §8 recorded as reversible:** `expo-notifications` replaces `@react-native-firebase/messaging` + Notifee — one first-party native dependency instead of two, and `getDevicePushTokenAsync()` returns the raw FCM token so the direct-FCM decision is unaffected. The risk is that RNFirebase's `setBackgroundMessageHandler` is better proven for waking a killed app; if M3.3 shows unreliable delivery, the fallback is contained to `app/push.ts`. The outcome is to be recorded either way.
+
+**Two design choices worth their own note.** The relay will address devices by their **X25519 public key**, so no new identifier is introduced and pairing already transfers the address — removing the question of how a sender learns the receiver's relay id. And pushes will be **data-only at high priority**, because a notification-type message would display before decryption and show the user ciphertext.
+
+**Why the plan lives in the repository:** Effie asked for it explicitly — *"save that plan here in the workplace so that we can go back to it if shits happen."* The planning tool's copy is session-local and is not a record; this file is version-controlled, survives a lost session, and is reviewable on GitHub.
+
+**Not verified — none of this has been built.** No relay exists, no Firebase project has been created, no Cloudflare account is configured, and `expo-notifications` is not installed. Free-tier limits for both Cloudflare and Supabase were read from vendor documentation and secondary sources on 2026-09-13, not tested against a running account. The claim that FCM deprioritises heavy high-priority data senders is carried from general documentation and is listed in the plan as something M3.4 must measure, not as established fact for this app.
+
 ## 2026-09-12
 
 ### Forward real Gmail and Messenger notifications over Wi-Fi; FR-36 and FR-26 hold in the live pipeline

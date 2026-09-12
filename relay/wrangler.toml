@@ -1,0 +1,27 @@
+name = "notifsync-relay"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+# FR-32: ciphertext is deleted on acknowledgement, or after 24 hours, whichever
+# comes first. Acknowledgement handles the common case; this sweep handles the
+# receiver that never came back. Hourly is far more often than necessary for a
+# 24-hour deadline, and costs one query per run.
+[triggers]
+crons = ["0 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "notifsync-relay"
+# Filled in by `wrangler d1 create notifsync-relay`. Local `wrangler dev` uses a
+# file-backed SQLite database and ignores this value.
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[vars]
+# Blobs older than this are swept (FR-32). Seconds.
+BLOB_TTL_SECONDS = "86400"
+
+# Secrets — set with `wrangler secret put`, never committed. This repository is
+# public, and the FCM service-account key is the one credential here that grants
+# real authority: it can send pushes to every device this app has ever
+# registered.
+#   FCM_SERVICE_ACCOUNT   (added in M3.2)
