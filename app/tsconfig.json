@@ -2,5 +2,13 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true
-  }
+  },
+  "exclude": [
+    "node_modules",
+    // Runs under Node, not React Native: it imports node:crypto and uses
+    // explicit .ts import specifiers, both of which the app's config rejects.
+    // Checked by running it (`node --experimental-strip-types
+    // pairingKeys.selftest.mts`), which is a stronger check than tsc anyway.
+    "**/*.selftest.mts"
+  ]
 }

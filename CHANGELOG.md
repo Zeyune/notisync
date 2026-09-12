@@ -1,5 +1,51 @@
 ## 2026-09-12
 
+### Add FR-2 key derivation with a self-test; catch a noble v2 API break before it reached the device
+**Type:** Added
+**Time:** 23:06 +08:00
+**Files:** `app/pairing.ts`, `app/pairingKeys.ts`, `app/pairingKeys.selftest.mts`, `app/tsconfig.json`, `app/package.json`
+**Related:** §8, §12 Q2, FR-1, FR-2, FR-3
+
+Installed `@noble/curves@2.4.0` and `@noble/hashes@2.4.0` per Q2. `pairingKeys.ts` derives both directional keys from an X25519 exchange; `pairing.ts` generates the device identity and builds FR-1's QR payload; `pairingKeys.selftest.mts` proves the derivation under Node.
+
+**The self-test earned its keep immediately.** `@noble/hashes` v2 requires `info` and `salt` as `Uint8Array` and **throws on a string** rather than coercing. The first implementation passed a template string, which typechecked cleanly and would have failed at runtime on device, during pairing, with a `TypeError` from inside a KDF. Caught in seconds on the laptop instead.
+
+**Why the derivation was split into its own file.** `pairingKeys.ts` imports nothing from Expo, so it runs under plain Node — which is the only reason both sides of a pairing could be tested without a second phone existing. `pairing.ts` keeps everything platform-bound: randomness and the QR payload.
+
+**The failure this test exists to prevent is a quiet one.** If the two devices disagree about which direction is which, pairing succeeds, encryption succeeds, and every message fails at the far end with an AEAD authentication error that points at the cipher rather than at the derivation. The test checks that Alice's send key equals Bob's receive key and vice versa, that the two directions differ (§8), that a different peer yields different keys, and that derivation is deterministic — **across ten random pairs**, because which device sorts "first" depends on random key bytes and a single run exercises only one branch. A bug in the other branch would otherwise pass half the time.
+
+**Design decisions worth recording:** both devices establish their role by **bytewise-sorting the two public keys**, which is deterministic and identical on both sides, so no negotiation channel is needed — each side holds only its own secret and the peer's public key. Both public keys are bound into the HKDF salt and info, so a derived key is valid only for the exact pair that produced it. The raw X25519 output is never used as a key; it is a curve point rather than uniform bytes, and HKDF's extract step is what fixes that.
+
+**Randomness comes from `expo-crypto`, not from noble.** `x25519.utils.randomSecretKey()` reaches for `globalThis.crypto.getRandomValues`, which is not reliably present under Hermes without a polyfill. A silent fall back to weak randomness during key generation is the worst available failure, and an X25519 secret key is just 32 random bytes, so taking them from a platform CSPRNG removes the question at no cost.
+
+**Also:** `app/tsconfig.json` now excludes `**/*.selftest.mts`, which is a Node script using `node:crypto` and explicit `.ts` import specifiers that the app's config rejects. It is checked by being run, which is stronger than typechecking it.
+
+**Verified:** all seven self-test checks pass, including across both sort orders; `npx tsc --noEmit` clean.
+
+**Not verified — none of this is wired into the app.** There is no QR rendering, no scanner, and no second device; `generateIdentity` and `buildPairingPayload` have never executed on hardware, so `expo-crypto`'s `getRandomBytes` and the `btoa`-based base64url encoder are both untested under Hermes. `crypto.ts` still seals with the hardcoded development key — the derived keys are not yet used by anything. **FR-3 is absent**: nothing writes to Android Keystore or the iOS Keychain, so derived keys would live only in memory. The pairing token is generated but never validated or expired, and FR-4's unpair path does not exist.
+
+### Encrypt the forwarded payload; prove expo-crypto's AES-GCM format against a third implementation
+**Type:** Added
+**Time:** 23:02 +08:00
+**Files:** `app/crypto.ts`, `app/lanForwarding.ts`, `app/App.tsx`, `app/package.json`, `tools/m1-receiver.mjs`
+**Related:** §7, §8, §12 Q2, §10 M2, FR-1, FR-2, FR-3, FR-26, FR-27
+
+First slice of M2. `expo-crypto@~57.0.3` installed; `app/crypto.ts` seals payloads with AES-256-GCM; `lanForwarding.ts` encrypts inside `sendToReceiver` so no transport path can send plaintext; the receiver opens envelopes with Node's `createDecipheriv`. Notifications now leave the phone as ciphertext.
+
+**Q2's load-bearing assumption is no longer an assumption.** Q2 records that `expo-crypto`'s `combined()` matching CryptoKit's `AES.GCM.SealedBox` rested on both vendors' documentation agreeing, never on a round trip — and the real CryptoKit test needs a Mac this project will not have until M3. Node was used as the available third party: it implements standard AES-256-GCM with no knowledge of Expo or Apple. A notification sealed on the A52 opened correctly in Node (`[2] seq=1 Samsung A52 · 248B`), which establishes that `combined()` is genuinely `IV ‖ ciphertext ‖ tag` with a 12-byte IV and a 16-byte tag — the layout CryptoKit consumes. **This does not prove CryptoKit will open it**; it converts "two documents agree" into "an independent implementation agrees", which is where the risk actually sat.
+
+**The receiver's decryption was self-tested before the phone was involved**, using a Node-sealed payload, so that a later failure from the device would be unambiguously a format difference rather than a bug in the test harness.
+
+**The envelope carries `{v, payload}` and nothing else — `seq` moved inside the ciphertext.** Leaving it outside would have let the receiver detect FR-26 gaps without decrypting, which is convenient and wrong: it hands the relay an ordered per-device counter for free. §7 already concedes timing and volume; an explicit sequence number is a stronger signal, and under §1.1 that counter counts money events. The version field is checked and unknown versions are refused rather than guessed at.
+
+**The development key is hardcoded in two files and committed to a public repository, deliberately and loudly.** `app/crypto.ts` and `tools/m1-receiver.mjs` both carry a warning that it is public, worthless, and must be **deleted** rather than rotated when FR-2's pairing lands. Stated plainly because a hardcoded key looks ordinary six months later: until pairing exists this is authenticated encryption under a key everyone has, which is a transport test and not a security property. Real keys are per-pairing, live in Keystore/Keychain (FR-3), and are unrecoverable by design (FR-27).
+
+**Also fixed:** the app header still read "M1 LAN loop — plaintext, local network" after payloads became ciphertext, and the component doc still described M1's scope.
+
+**Verified:** `npx tsc --noEmit` clean; `node --check` clean; the Android build completed (exit 0) and reinstalled; the notification-access grant survived the reinstall; `TextEncoder` is available under Hermes, which the code assumed and had not tested.
+
+**Not verified:** no Swift or CryptoKit code has been written or run, and none can be until a Mac is available — the iOS half of Q2's interop claim remains open. Encryption has only been exercised over the USB tunnel with synthetic shell notifications; no financial notification has been forwarded encrypted. §8's separate-key-per-direction rule is **not implemented** — both directions would currently share one key, which is exactly the nonce-collision risk §8 exists to prevent, and it cannot be fixed before pairing provides two keys. Key rotation, unpairing, and FR-3's Keystore/Keychain storage are all absent.
+
 ### Answer Q2: pick the crypto stack and unblock M2
 **Type:** Decided
 **Time:** 22:57 +08:00

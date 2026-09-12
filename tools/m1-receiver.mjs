@@ -15,6 +15,62 @@
  */
 
 import { createServer } from "node:http";
+import { createDecipheriv } from "node:crypto";
+
+/**
+ * ⚠ DEVELOPMENT KEY — PUBLIC AND WORTHLESS. Mirrors app/crypto.ts. ⚠
+ *
+ * Committed to a public repository on purpose: it lets the sender and this
+ * throwaway receiver agree on a key before FR-2's pairing exists. Both copies
+ * get deleted when the QR exchange lands.
+ */
+const DEVELOPMENT_KEY = Buffer.from(
+  "PgZO+T2I2lS82EC/U2REy7DqjlD5LWgJtTtd5/dRmRw=",
+  "base64",
+);
+
+const IV_BYTES = 12;
+const TAG_BYTES = 16;
+
+/**
+ * Opens an `expo-crypto` envelope using Node's own AES-256-GCM.
+ *
+ * This function is the point of the exercise, not a convenience. PRD §12 Q2
+ * records that `expo-crypto`'s `combined()` layout matching CryptoKit's
+ * `AES.GCM.SealedBox` rests on both vendors' documentation agreeing, never on a
+ * measured round trip — and the real CryptoKit test needs a Mac, which this
+ * project does not have until M3.
+ *
+ * Node is the available stand-in, and a meaningful one: it implements standard
+ * AES-256-GCM with no knowledge of Expo or Apple. If a payload sealed on the
+ * phone opens here, then `combined()` really is `IV ‖ ciphertext ‖ tag` with a
+ * 12-byte IV and a 16-byte tag, which is exactly what CryptoKit consumes. That
+ * does not *prove* CryptoKit will open it — only a Mac proves that — but it
+ * converts the claim from "two documents agree" into "a third implementation
+ * agrees", which is where most of the risk was.
+ */
+function open(envelope) {
+  if (envelope.v !== 1) {
+    throw new Error(`unknown envelope version ${envelope.v} — refusing to guess`);
+  }
+
+  const combined = Buffer.from(envelope.payload, "base64");
+  if (combined.length < IV_BYTES + TAG_BYTES) {
+    throw new Error(`payload too short: ${combined.length} bytes`);
+  }
+
+  const iv = combined.subarray(0, IV_BYTES);
+  const tag = combined.subarray(combined.length - TAG_BYTES);
+  const ciphertext = combined.subarray(IV_BYTES, combined.length - TAG_BYTES);
+
+  const decipher = createDecipheriv("aes-256-gcm", DEVELOPMENT_KEY, iv);
+  decipher.setAuthTag(tag);
+  // `final()` throws if the tag does not verify — that is the authentication in
+  // authenticated encryption, and it must never be caught and ignored.
+  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+
+  return JSON.parse(plaintext.toString("utf8"));
+}
 
 const PORT = Number(process.argv[2] ?? 8787);
 
@@ -66,10 +122,10 @@ const server = createServer((req, res) => {
   req.on("end", () => {
     let payload;
     try {
-      payload = JSON.parse(raw);
-    } catch {
-      console.error(`  ✗ unparseable body (${raw.length} bytes)`);
-      res.writeHead(400).end("bad json\n");
+      payload = open(JSON.parse(raw));
+    } catch (e) {
+      console.error(`  ✗ could not open envelope: ${e.message}`);
+      res.writeHead(400).end("bad envelope\n");
       return;
     }
 

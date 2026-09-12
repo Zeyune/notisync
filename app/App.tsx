@@ -21,16 +21,17 @@ import NotificationListener, {
 import { sendToReceiver, toForwarded } from "./lanForwarding";
 
 /**
- * M1 LAN loop (see notification-sync-prd.md §10).
+ * M2, first slice (see notification-sync-prd.md §10).
  *
- * M0 proved the Kotlin NotificationListenerService can capture notifications and
- * hand them to JS. M1 adds exactly one thing: pushing each capture over the
- * local network to a receiver, to find out whether §7's `ForwardedNotification`
- * is the right shape before M2 encrypts it and M3 puts a relay behind it.
+ * M0 proved capture. M1 proved the wire shape by forwarding it in the clear and
+ * confirmed §7's `ForwardedNotification` needs no extra fields. M2 encrypts it:
+ * payloads now leave as AES-256-GCM ciphertext per §12 Q2.
  *
- * Still absent, deliberately: encryption, pairing, filtering, queueing, retry,
- * discovery, and a foreground service. PRD §10 timeboxes this milestone and
- * throws it away at M3, so anything polished here is paid for twice.
+ * Still absent: **pairing**. Both ends share a fixed development key committed
+ * to a public repository — see the warning in `crypto.ts`. Until FR-1 and FR-2
+ * land, this is authenticated encryption with a key everyone has, which is a
+ * transport test rather than a security property. Also still absent: filtering,
+ * queueing, retry, discovery, and a foreground service.
  */
 export default function App() {
   return (
@@ -193,7 +194,7 @@ function CaptureScreen() {
 
       <View style={styles.header}>
         <Text style={styles.title}>NotifSync</Text>
-        <Text style={styles.subtitle}>M1 LAN loop — plaintext, local network</Text>
+        <Text style={styles.subtitle}>M2 — AES-256-GCM, fixed dev key</Text>
       </View>
 
       <View style={styles.permissionCard}>

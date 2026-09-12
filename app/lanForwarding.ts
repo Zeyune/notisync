@@ -1,4 +1,5 @@
 import type { CapturedNotification } from "./modules/notification-listener";
+import { seal } from "./crypto";
 
 /**
  * The M1 wire format — what actually leaves the device.
@@ -88,10 +89,14 @@ export async function sendToReceiver(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    // Encrypted before it reaches the transport, so no code path below this
+    // line can send plaintext by accident (PRD §7, §12 Q2).
+    const envelope = await seal(payload);
+
     const response = await fetch(`http://${host}/notify`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(envelope),
       signal: controller.signal,
     });
     if (!response.ok) {
