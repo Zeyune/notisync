@@ -27,6 +27,9 @@ import {
   pairWith,
   unpair,
 } from "./pairingState";
+import { relayUrl, setRelayUrl } from "./relayClient";
+import { registerForPush } from "./push";
+import type { PushState } from "./push";
 
 /**
  * M2, first slice (see notification-sync-prd.md §10).
@@ -249,6 +252,7 @@ function CaptureScreen() {
       </View>
 
       <PairingCard />
+      <RelayCard />
 
       <View style={styles.permissionCard}>
         <View style={styles.forwardRow}>
@@ -487,6 +491,90 @@ function PairingCard() {
       )}
 
       {!!status && <Text style={styles.testResult}>{status}</Text>}
+    </View>
+  );
+}
+
+/**
+ * Relay registration and push state (M3.2).
+ *
+ * Everything here is displayed rather than merely attempted, because each of
+ * these can fail in a way that leaves the app looking healthy while it is
+ * unreachable: permission denied means the receiver pairs and displays nothing
+ * (FR-31), a missing FCM token means pushes go nowhere, and a failed relay
+ * registration means the relay cannot address this device at all. All three
+ * present as "notifications just stopped", which is the symptom FR-33's
+ * diagnostics screen exists to explain.
+ */
+function RelayCard() {
+  const [url, setUrl] = useState<string | null>(null);
+  const [push, setPush] = useState<PushState | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void relayUrl().then((value) => {
+      if (!cancelled) setUrl(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const register = useCallback(() => {
+    setBusy(true);
+    void registerForPush()
+      .then((state) => setPush(state))
+      .finally(() => setBusy(false));
+  }, []);
+
+  return (
+    <View style={styles.permissionCard}>
+      <Text style={styles.permissionLabel}>Relay</Text>
+      <Text
+        style={[
+          styles.permissionValue,
+          push?.token && !push.error ? styles.granted : styles.notGranted,
+        ]}
+      >
+        {push === null
+          ? "not registered"
+          : push.error
+            ? "error"
+            : push.token
+              ? "registered"
+              : "no token"}
+      </Text>
+
+      <Text style={styles.keyNotice}>
+        {push === null
+          ? "push permission unknown"
+          : `notifications ${push.permissionGranted ? "allowed" : "BLOCKED (FR-31)"}`}
+      </Text>
+
+      <TextInput
+        style={styles.input}
+        value={url ?? ""}
+        onChangeText={setUrl}
+        onEndEditing={() => url && void setRelayUrl(url)}
+        placeholder="http://192.168.1.11:8788"
+        autoCapitalize="none"
+        autoCorrect={false}
+        inputMode="url"
+      />
+
+      <Pressable style={styles.buttonSecondary} onPress={register} disabled={busy}>
+        <Text style={styles.buttonSecondaryText}>
+          {busy ? "registering…" : "Register with relay"}
+        </Text>
+      </Pressable>
+
+      {!!push?.token && (
+        <Text style={styles.code} numberOfLines={2}>
+          FCM token: {push.token}
+        </Text>
+      )}
+      {!!push?.error && <Text style={[styles.testResult, styles.notGranted]}>{push.error}</Text>}
     </View>
   );
 }

@@ -14,7 +14,7 @@ binding = "DB"
 database_name = "notifsync-relay"
 # Filled in by `wrangler d1 create notifsync-relay`. Local `wrangler dev` uses a
 # file-backed SQLite database and ignores this value.
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "f64724f7-5e4c-4c93-9346-16cbd1c38d9f"
 
 [vars]
 # Blobs older than this are swept (FR-32). Seconds.

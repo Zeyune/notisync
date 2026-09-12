@@ -32,6 +32,8 @@ const PEER_DEVICE_ID = "notifsync.v1.peer.deviceId";
 let identity: Identity | null = null;
 let sessionKeys: SessionKeys | null = null;
 let peerDeviceId: string | null = null;
+/** The peer's base64url public key — also its relay address (M3). */
+let storedPeerPublic: string | null = null;
 let ready = false;
 
 function toBase64(bytes: Uint8Array): string {
@@ -79,6 +81,7 @@ export async function initPairing(): Promise<void> {
       identity.publicKey,
       fromBase64Url(storedPeer),
     );
+    storedPeerPublic = storedPeer;
     peerDeviceId = await SecureStore.getItemAsync(PEER_DEVICE_ID);
   }
 
@@ -108,6 +111,27 @@ export function isReady(): boolean {
 /** The payload the other device needs — FR-1's QR contents, as plain text. */
 export function myPairingPayload(deviceId: string): PairingPayload {
   return buildPairingPayload(deviceId, requireIdentity().publicKey);
+}
+
+function toBase64Url(bytes: Uint8Array): string {
+  return toBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/**
+ * This device's address on the relay (M3).
+ *
+ * The relay addresses devices by X25519 public key rather than minting an id of
+ * its own, so a paired sender already knows where to send — the pairing exchange
+ * distributed this exact value. The key is public by definition and gives the
+ * relay no ability to decrypt.
+ */
+export function myAddress(): string {
+  return toBase64Url(requireIdentity().publicKey);
+}
+
+/** The paired peer's relay address, or null when unpaired. */
+export function peerAddress(): string | null {
+  return storedPeerPublic;
 }
 
 export type PairResult =
@@ -160,6 +184,7 @@ export async function pairWith(raw: string): Promise<PairResult> {
   const me = requireIdentity();
   sessionKeys = deriveSessionKeys(me.secretKey, me.publicKey, theirPublicKey);
   peerDeviceId = payload.deviceId;
+  storedPeerPublic = payload.pk;
 
   // Stored only after the derivation succeeds, so a rejected payload cannot
   // leave a half-written pairing behind.
@@ -210,6 +235,7 @@ export function sendKey(): Uint8Array | null {
 export async function unpair(): Promise<void> {
   sessionKeys = null;
   peerDeviceId = null;
+  storedPeerPublic = null;
   await SecureStore.deleteItemAsync(PEER_PUBLIC);
   await SecureStore.deleteItemAsync(PEER_DEVICE_ID);
 }

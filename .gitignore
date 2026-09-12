@@ -20,3 +20,5 @@ relay/.wrangler/
 # google-services.json identifies the Firebase project to the app.
 **/google-services.json
 **/service-account*.json
+
+.env/

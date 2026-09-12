@@ -1,5 +1,34 @@
 ## 2026-09-13
 
+### M3.2 — FCM token acquisition working on device; relay deployment blocked on a subdomain
+**Type:** Added
+**Time:** 00:58 +08:00
+**Files:** `app/app.json`, `app/package.json`, `app/push.ts`, `app/relayClient.ts`, `app/pairingState.ts`, `app/App.tsx`, `relay/wrangler.toml`
+**Related:** FR-3, FR-16, FR-17, FR-30, FR-31, FR-32, §10 M3
+
+Installed `expo-notifications`, pointed `app.json` at `google-services.json`, and added `app/relayClient.ts` (register/send/fetch/ack) and `app/push.ts` (permission, token, registration). Cloudflare D1 database `notifsync-relay` created in **APAC**, schema applied remotely.
+
+**The device now holds a real FCM registration token** — `eAi7VIzCRDCndh-7D_csD7:APA91bG…` — obtained via `getDevicePushTokenAsync()`, which is the **raw FCM token, not an Expo push token**. That distinction was the point of choosing direct FCM: an Expo token would route every delivery through Expo's servers, adding a third party to a product whose pitch is that there is not one (FR-30).
+
+**FR-31 behaved exactly as specified.** The `POST_NOTIFICATIONS` dialog appeared during setup rather than being discovered missing later, and the card now reads `notifications allowed`. The PRD calls an unrequested permission here "a silent failure mode that must be caught at setup, not discovered at 2am".
+
+**Expo's prebuild did what the Firebase console asks you to do by hand**, and the manual instructions were deliberately *not* followed: `android/` is generated and is wiped by every `expo prebuild`, so edits to `build.gradle` would not survive. Prebuild added `com.google.gms:google-services:4.4.4` to the project Gradle file, applied the plugin in the app module, and copied `google-services.json` into `android/app/`. **The console's snippet also includes `firebase-analytics`, which was excluded** — FR-30 forbids analytics SDKs outright, and the generated build was checked to confirm neither analytics nor Crashlytics was pulled in.
+
+**Two defects found by using it, both in code written tonight.**
+
+*The UI hung on "registering…" indefinitely.* `getDevicePushTokenAsync()` does not reject when Google Play services cannot complete FCM registration — it retries on its own backoff (observed at 26s, 38s, 64s) and the promise never settles. A timeout now bounds it, because a hung promise and a slow one are indistinguishable to the caller and only one is worth waiting for.
+
+*That timeout was then set too aggressively.* It was 20s, but this device's **first** registration genuinely took over a minute while every later call returned instantly from cache. A 20s bound would fail the one case that is slow for a legitimate reason — a fresh install — and report it as an error. Raised to 60s, with the measurement recorded in the comment so it is not "tidied" back down.
+
+**Relay registration fails, and the cause is understood:** `relay timed out after 10s`. Windows Firewall does not admit inbound connections on 8788. Port 8787 worked earlier only because `node.exe` already had an allow rule; wrangler runs `workerd.exe`, a different binary on a different port, so it is dropped silently. **This will be fixed by deploying rather than by a firewall rule** — a deployed Worker is publicly reachable over HTTPS, which is the product's actual shape and also what M3.4's off-network test requires.
+
+**Blocked on a human step:** `wrangler deploy` refuses because the account has no `workers.dev` subdomain registered, and the name it auto-tried was taken. Effie must pick one in the Cloudflare dashboard.
+
+**Also observed, contradicting an earlier note:** the identity and pairing **survived this reinstall** — same public key `F2UCRJq0…` and the same fingerprint `send 443e247e · recv ee1f3d84` after `adb install -r`. An earlier reinstall tonight did regenerate them. Both observations are real, so reinstall behaviour is inconsistent and must not be relied on either way.
+
+**Not verified:** **no push has been sent or received** — the relay has never called FCM, and `FCM_SERVICE_ACCOUNT` is not set. The Worker has never run outside local miniflare. No app code calls `/send`, `/blob` or `/ack` yet; `relayClient.ts` compiles and its register path is the only one exercised, and that only to a timeout. The Xiaomi is unplugged and has none of this build. The raised 60s timeout has not been re-tested against a fresh install.
+
+
 ### M3.1 — relay skeleton on Cloudflare Workers + D1, with a 19-check smoke test
 **Type:** Added
 **Time:** 00:33 +08:00
