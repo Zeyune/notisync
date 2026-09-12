@@ -1,5 +1,5 @@
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AppState,
   FlatList,
@@ -20,7 +20,13 @@ import NotificationListener, {
   CapturedNotification,
 } from "./modules/notification-listener";
 import { sendToReceiver, toForwarded } from "./lanForwarding";
-import { currentPairing, myPairingPayload, pairWith, unpair } from "./pairingState";
+import {
+  currentPairing,
+  initPairing,
+  myPairingPayload,
+  pairWith,
+  unpair,
+} from "./pairingState";
 
 /**
  * M2, first slice (see notification-sync-prd.md §10).
@@ -29,11 +35,13 @@ import { currentPairing, myPairingPayload, pairWith, unpair } from "./pairingSta
  * confirmed §7's `ForwardedNotification` needs no extra fields. M2 encrypts it:
  * payloads now leave as AES-256-GCM ciphertext per §12 Q2.
  *
- * Still absent: **pairing**. Both ends share a fixed development key committed
- * to a public repository — see the warning in `crypto.ts`. Until FR-1 and FR-2
- * land, this is authenticated encryption with a key everyone has, which is a
- * transport test rather than a security property. Also still absent: filtering,
- * queueing, retry, discovery, and a foreground service.
+ * Pairing (FR-1, FR-2) now works by manual code entry, and the derived key is
+ * persisted to Keystore/Keychain (FR-3). An **unpaired** device still falls back
+ * to the public development key in `crypto.ts` — encryption with a key anyone
+ * can read — which is why the pairing card states which key is in use.
+ *
+ * Still absent: QR rendering and scanning, a receiver mode, filtering, queueing,
+ * retry, discovery, and a foreground service.
  */
 export default function App() {
   return (
@@ -377,15 +385,44 @@ function PairingCard() {
   const [peerCode, setPeerCode] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [pairing, setPairing] = useState(() => currentPairing());
+  const [myCode, setMyCode] = useState<string | null>(null);
 
-  // Public by design — the private half never leaves `pairingState`. Logged so
-  // it can be read off `adb logcat` while there is no QR code to scan.
-  const myCode = useMemo(() => {
-    const payload = myPairingPayload(Platform.OS === "android" ? "android" : "ios");
-    const json = JSON.stringify(payload);
-    console.log(`NotifSync pairing code: ${json}`);
-    return json;
+  // Identity and any stored pairing come out of Keystore/Keychain, so this is
+  // async and nothing else here can run until it resolves. Failing loudly is
+  // deliberate: a silent failure would generate a fresh identity and present as
+  // the pairing having spontaneously broken.
+  useEffect(() => {
+    let cancelled = false;
+    initPairing()
+      .then(() => {
+        if (cancelled) return;
+        const payload = myPairingPayload(Platform.OS === "android" ? "android" : "ios");
+        const json = JSON.stringify(payload);
+        // Public by design — the private half never leaves `pairingState`.
+        // Logged so it can be read off `adb logcat` while there is no QR to scan.
+        console.log(`NotifSync pairing code: ${json}`);
+        setMyCode(json);
+        setPairing(currentPairing());
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setStatus(`secure storage failed — ${String(e)}`);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  if (!myCode) {
+    return (
+      <View style={styles.permissionCard}>
+        <Text style={styles.permissionLabel}>Pairing</Text>
+        <Text style={styles.permissionValue}>
+          {status ? "unavailable" : "loading keys…"}
+        </Text>
+        {!!status && <Text style={styles.testResult}>{status}</Text>}
+      </View>
+    );
+  }
 
   return (
     <View style={styles.permissionCard}>
@@ -425,9 +462,11 @@ function PairingCard() {
       <Pressable
         style={styles.buttonSecondary}
         onPress={() => {
-          const result = pairWith(peerCode);
-          setStatus(result.ok ? "paired ✓" : `failed — ${result.error}`);
-          setPairing(currentPairing());
+          setStatus("pairing…");
+          void pairWith(peerCode).then((result) => {
+            setStatus(result.ok ? "paired ✓" : `failed — ${result.error}`);
+            setPairing(currentPairing());
+          });
         }}
       >
         <Text style={styles.buttonSecondaryText}>Pair</Text>
@@ -437,9 +476,10 @@ function PairingCard() {
         <Pressable
           style={styles.buttonSecondary}
           onPress={() => {
-            unpair();
-            setPairing(currentPairing());
-            setStatus("unpaired");
+            void unpair().then(() => {
+              setPairing(currentPairing());
+              setStatus("unpaired");
+            });
           }}
         >
           <Text style={styles.buttonSecondaryText}>Unpair</Text>

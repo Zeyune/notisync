@@ -1,47 +1,113 @@
+import { x25519 } from "@noble/curves/ed25519.js";
+import * as SecureStore from "expo-secure-store";
+
 import { buildPairingPayload, deriveSessionKeys, generateIdentity } from "./pairing";
 import type { Identity, PairingPayload } from "./pairing";
 import type { SessionKeys } from "./pairingKeys";
 
 /**
- * Where the pairing lives while the app is running — and only while it is.
+ * FR-3 — the identity and the pairing, kept in Android Keystore / iOS Keychain.
  *
- * **FR-3 is not implemented.** The shared key is supposed to live in Android
- * Keystore or the iOS Keychain; here it lives in a module-level variable, so a
- * reload or a process death loses it and both devices must pair again. That is
- * acceptable for M2's first slice and unacceptable to ship: a receiver that
- * silently forgets its key would present as "notifications stopped arriving",
- * which is the single symptom FR-33's diagnostics screen exists to explain.
+ * `expo-secure-store` is FR-3 as written: on Android it encrypts values with a
+ * Keystore-backed key, on iOS it writes to the Keychain. That second half also
+ * matters for FR-35, because the Keychain **access group** is how the
+ * Notification Service Extension will read this key without the app running.
  *
- * Deliberately a module-level store rather than React state: `crypto.ts` needs
- * the send key from inside the notification listener callback, which is not a
- * React render path and has no access to context.
+ * What is stored is the X25519 *secret key* and the peer's *public* key, not the
+ * derived session keys. The session keys are recomputed on load, so there is one
+ * source of truth and no way for a stored derivation to drift out of step with
+ * the code that produced it. Re-deriving costs one scalar multiplication at
+ * startup.
+ *
+ * FR-27 still holds: nothing here leaves the device and nothing can recover it.
+ * Uninstalling, or clearing app data, destroys the pairing permanently and both
+ * devices must pair again.
  */
+
+// Namespaced so a future second pairing (v2, §11) does not collide.
+const IDENTITY_SECRET = "notifsync.v1.identity.secret";
+const PEER_PUBLIC = "notifsync.v1.peer.public";
+const PEER_DEVICE_ID = "notifsync.v1.peer.deviceId";
 
 let identity: Identity | null = null;
 let sessionKeys: SessionKeys | null = null;
 let peerDeviceId: string | null = null;
+let ready = false;
 
-/**
- * This device's long-term identity, generated once per app run.
- *
- * Regenerated on every launch precisely because FR-3 storage is missing — there
- * is nowhere durable to keep the secret key, so pretending it is long-term would
- * be a lie the rest of the code would then rely on.
- */
-export function myIdentity(): Identity {
-  if (!identity) identity = generateIdentity();
-  return identity;
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
-/** The payload the other device needs — FR-1's QR contents, as plain text. */
-export function myPairingPayload(deviceId: string): PairingPayload {
-  return buildPairingPayload(deviceId, myIdentity().publicKey);
+function fromBase64(value: string): Uint8Array {
+  return Uint8Array.from(atob(value), (c) => c.charCodeAt(0));
 }
 
 function fromBase64Url(value: string): Uint8Array {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/");
-  const binary = atob(padded + "=".repeat((4 - (padded.length % 4)) % 4));
-  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+  return fromBase64(padded + "=".repeat((4 - (padded.length % 4)) % 4));
+}
+
+/**
+ * Loads the identity and any stored pairing, generating an identity on first run.
+ *
+ * Must be awaited before anything else here is used. The alternative — lazily
+ * generating an identity the first time it is asked for — is what the in-memory
+ * version did, and it silently produced a *new* device identity whenever module
+ * state was lost, which looked like the pairing spontaneously breaking.
+ */
+export async function initPairing(): Promise<void> {
+  if (ready) return;
+
+  const storedSecret = await SecureStore.getItemAsync(IDENTITY_SECRET);
+  if (storedSecret) {
+    const secretKey = fromBase64(storedSecret);
+    // Public key is derived rather than stored: it is a pure function of the
+    // secret, and storing both invites them to disagree.
+    const { publicKey } = identityFromSecret(secretKey);
+    identity = { secretKey, publicKey };
+  } else {
+    identity = generateIdentity();
+    await SecureStore.setItemAsync(IDENTITY_SECRET, toBase64(identity.secretKey));
+  }
+
+  const storedPeer = await SecureStore.getItemAsync(PEER_PUBLIC);
+  if (storedPeer) {
+    sessionKeys = deriveSessionKeys(
+      identity.secretKey,
+      identity.publicKey,
+      fromBase64Url(storedPeer),
+    );
+    peerDeviceId = await SecureStore.getItemAsync(PEER_DEVICE_ID);
+  }
+
+  ready = true;
+}
+
+/**
+ * Public key is derived from the stored secret rather than stored alongside it:
+ * it is a pure function of the secret, and keeping both invites them to
+ * disagree after a partial write.
+ */
+function identityFromSecret(secretKey: Uint8Array): Identity {
+  return { secretKey, publicKey: x25519.getPublicKey(secretKey) };
+}
+
+function requireIdentity(): Identity {
+  if (!identity) {
+    throw new Error("initPairing() must be awaited before using pairing state");
+  }
+  return identity;
+}
+
+export function isReady(): boolean {
+  return ready;
+}
+
+/** The payload the other device needs — FR-1's QR contents, as plain text. */
+export function myPairingPayload(deviceId: string): PairingPayload {
+  return buildPairingPayload(deviceId, requireIdentity().publicKey);
 }
 
 export type PairResult =
@@ -49,15 +115,15 @@ export type PairResult =
   | { ok: false; error: string };
 
 /**
- * Completes FR-2 from a peer's pairing payload.
+ * Completes FR-2 from a peer's pairing payload, and persists it.
  *
  * Returns a short fingerprint of the derived keys so the two devices can be
  * compared by eye. That check matters more than it looks: if the derivation
  * disagreed across devices, every later symptom would be an AEAD authentication
  * failure at the far end, which points at the cipher rather than at pairing.
- * Comparing four bytes on two screens localises that in seconds.
+ * Comparing four bytes on two screens localises it in seconds.
  */
-export function pairWith(raw: string): PairResult {
+export async function pairWith(raw: string): Promise<PairResult> {
   const trimmed = raw.trim();
   if (!trimmed) return { ok: false, error: "nothing entered" };
 
@@ -91,9 +157,14 @@ export function pairWith(raw: string): PairResult {
     return { ok: false, error: `public key is ${theirPublicKey.length} bytes, expected 32` };
   }
 
-  const me = myIdentity();
+  const me = requireIdentity();
   sessionKeys = deriveSessionKeys(me.secretKey, me.publicKey, theirPublicKey);
   peerDeviceId = payload.deviceId;
+
+  // Stored only after the derivation succeeds, so a rejected payload cannot
+  // leave a half-written pairing behind.
+  await SecureStore.setItemAsync(PEER_PUBLIC, payload.pk);
+  await SecureStore.setItemAsync(PEER_DEVICE_ID, payload.deviceId);
 
   return { ok: true, fingerprint: fingerprintOf(sessionKeys) };
 }
@@ -128,8 +199,17 @@ export function sendKey(): Uint8Array | null {
   return sessionKeys?.sendKey ?? null;
 }
 
-/** FR-4's unpair, minus the persistence it will need once FR-3 exists. */
-export function unpair(): void {
+/**
+ * FR-4's unpair. Revokes this side of the pairing permanently.
+ *
+ * The identity is deliberately kept: this device stays itself, it simply has no
+ * peer. Destroying the identity too would also be defensible, but it would
+ * silently invalidate any *other* pairing once §11's multi-device support
+ * exists, so the narrower action is the safer default.
+ */
+export async function unpair(): Promise<void> {
   sessionKeys = null;
   peerDeviceId = null;
+  await SecureStore.deleteItemAsync(PEER_PUBLIC);
+  await SecureStore.deleteItemAsync(PEER_DEVICE_ID);
 }

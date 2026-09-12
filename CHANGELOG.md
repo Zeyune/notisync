@@ -1,5 +1,33 @@
 ## 2026-09-12
 
+### Implement FR-3: persist identity and pairing to Keystore/Keychain
+**Type:** Added
+**Time:** 23:36 +08:00
+**Files:** `app/pairingState.ts`, `app/App.tsx`, `app/app.json`, `app/package.json`
+**Related:** FR-3, FR-4, FR-27, FR-35, §10 M2
+
+Installed `expo-secure-store` and rewrote `pairingState.ts` to persist the X25519 identity and the peer's public key. `initPairing()` loads or creates them at startup; `pairWith` and `unpair` became async and write through. This is FR-3 as specified — Keystore-backed encryption on Android, Keychain on iOS, which is also the mechanism FR-35's Notification Service Extension will use to read the key via a Keychain access group.
+
+**Verified on device across a full process kill** (`am force-stop`, process confirmed gone, then relaunch):
+
+| | before | after |
+|---|---|---|
+| pairing | `paired with manual` | `paired with manual` |
+| fingerprint | `send b4ac50f7 · recv 96c716ab` | `send b4ac50f7 · recv 96c716ab` |
+| own public key | `F2UCRJq0…` | `F2UCRJq0…` |
+
+**The identity check is the one that matters, and it was chosen before running the test.** A half-implementation that persisted the peer key but regenerated the identity would still show "paired" with a *different* fingerprint — the pairing would look intact while deriving entirely different session keys, and the failure would only surface later as decryption errors at the far end. Checking the fingerprint alone would not have caught it; checking that the device's own public key is unchanged does.
+
+**What is stored is the secret key and the peer's public key — not the derived session keys.** They are recomputed on load, so there is one source of truth and no way for a stored derivation to drift from the code that produced it. The public key is likewise derived from the secret rather than stored beside it, since keeping both invites them to disagree after a partial write. FR-27 is unaffected: nothing leaves the device and nothing can recover it.
+
+**`unpair` deliberately keeps the identity** and deletes only the peer. Destroying the identity too is defensible, but it would silently invalidate any *other* pairing once §11's multi-device support exists, so the narrower action is the safer default.
+
+**A confusing intermediate failure, worth recording because it will recur:** after installing `expo-secure-store`, the Samsung showed `Cannot find native module 'ExpoSecureStore'`, followed by `initPairing doesn't exist` and `undefined is not a function`. Nothing was broken — Metro had hot-reloaded JS importing a native module that the *installed APK* predated. Native modules cannot be hot-reloaded, only built in. The cascade of follow-on errors comes from Fast Refresh tripping over the half-loaded module, and they are noise pointing away from the real cause.
+
+**Also:** `expo prebuild` regenerated `android/`, forcing a 5m48s from-scratch build. The APK was then installed to both phones with `adb install -r` rather than `expo run:android`, because Expo's `--device` matches on device *name* and rejects a serial, which is ambiguous with two phones attached. A stale Metro from 21:11 still held port 8081 and had to be stopped before a fresh one would start.
+
+**Not verified:** iOS is entirely untested — `expo-secure-store`'s Keychain path, and the access-group sharing FR-35 depends on, have never run. Persistence was confirmed only on the Samsung; the Xiaomi was reinstalled but not put through the restart test. Only a force-stop was tested, not a device reboot, an app update, or a low-memory kill. **Nothing has been sent using a persisted key** — no encrypted payload has crossed since pairing was made durable. The dev-key fallback for unpaired devices is still present in `crypto.ts`.
+
 ### Verify FR-2 device-to-device between two phones, against a prediction made in advance
 **Type:** Added
 **Time:** 23:22 +08:00
