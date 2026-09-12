@@ -1,3 +1,95 @@
+## 2026-09-12
+
+### Publish the repository to GitHub as `Zeyune/notisync`
+**Type:** Decided
+**Time:** 21:06 +08:00
+**Files:** — (no file changed; remote and commit commands handed over for Effie to run)
+**Related:** §12 Q9
+
+The project had existed for a month as a local-only git repo with no remote — confirmed by `git remote -v` and corroborated by `~/.claude/GITHUB-ACCOUNTS.md`, which listed `notifsync` under "repos with no remote yet" as of 2026-08-23. Effie created `https://github.com/Zeyune/notisync.git` and asked for the push commands. Handed over: stage, verify with `git status`, commit the pending 2026-08-12 work, `git branch -M main`, add origin, push with upstream.
+
+**Why:** ten commits and a month of findings sat on one disk with no second copy. The uncommitted 2026-08-12 work was the sharper exposure — the `StatusBarNotification.key` constraint now in §7 is the most consequential thing the project has learned, and it existed only as an unsaved working-tree edit.
+
+**GitHub's own setup snippet was rejected rather than run.** It assumes an empty directory: `git init` over an existing ten-commit repo, and `git add README.md` + `git commit -m "first commit"` would have stacked a placeholder README on top of real history and mislabelled it as the first commit. The handed-over block drops both and commits the actual pending work instead.
+
+**Flagged, not resolved — the repo name is `notisync`, without the `f`.** The local folder and the product name throughout the PRD are *NotifSync*. Q9 is open because a Play listing named "Notify Sync: Secure E2E Mirror" already collides in store search, and `notisync` sits closer to that collision than `notifsync` does; the candidate recorded under Q9 was `noti-noti`. Renaming is cheap before anything links to the repo. Q9 remains unanswered and this entry does not answer it.
+
+**Not verified:** the commands were handed over, not run — per the standing rule this session does not commit or push — so it is unconfirmed that the push succeeded or that the remote now holds anything. Whether the repository was created public or private was not stated; if public, §9.1's Play-policy reasoning and the `specialUse` justification strategy in Q8 are now readable by anyone, which is consistent with the Apache-2.0 decision but was not an explicit choice. `~/.claude/GITHUB-ACCOUNTS.md` still records this repo as having no remote and needs updating once the push is confirmed.
+
+## 2026-08-12
+
+### Confirm FR-36 on a second app; rule that notification keys must not reach the relay
+**Type:** Added
+**Time:** 21:57 +08:00
+**Files:** `notification-sync-prd.md`
+**Related:** FR-6, FR-7, FR-8, FR-9, FR-20, FR-36, §7, §10 M1
+
+A 29-minute capture window intended for a messaging-app sweep instead caught Gmail and Google Play services. Three findings, all recorded in the PRD.
+
+**FR-36 generalises, and the flag is the only safe test.** Gmail posts a group summary alongside every message — four messages, four summaries, all skipped, exactly 1:1 — so summary-pairing is not WhatsApp-specific. **The two apps mark summaries incompatibly:** WhatsApp's summary carries the *same id with a null tag*; Gmail's carries *id 0 with the same tag* as the message. A null-tag heuristic would have failed on Gmail and a matching-id heuristic would have failed on WhatsApp. `FLAG_GROUP_SUMMARY` catches both, which is what FR-36 already tests — the implementation choice was right for a reason that was not visible when it was made.
+
+**New constraint in §7: `StatusBarNotification.key` must never leave the device.** Play services was observed posting `a:GMSCORE_SYNC_RENDERER:…:117863126120006353924` — the trailing field is a **Google account ID**. WhatsApp and Messenger embed stable per-conversation identifiers in the same position. Forwarding keys would hand the relay a persistent account identifier and a conversation graph as plaintext metadata, materially exceeding the exposure §7 declares and defeating the point of encrypting payloads. The key was already absent from `ForwardedNotification`; §7 now says *why*, so it does not get added back for a plausible-sounding reason like idempotency or diagnostics. **This is the most consequential finding of the session** and it came from an app nobody set out to test.
+
+**FR-7's cost was understated.** SystemUI's `charging_state` re-posts every **20 seconds** — modal interval across ~104 gaps — not "roughly once per minute" as recorded on 2026-08-11. That is 3/minute, or **30% of FR-9's whole default per-app budget**, burned indefinitely while charging. Supersedes the 08-11 figure.
+
+**Also noted, unrecorded in the PRD:** Gmail's per-message id changes on every notification (`1069429549`, `607464166`, `-811771358`) while its tag repeats per thread — the inverse of WhatsApp, whose full key was stable across nine messages. So `key` is a conversation identifier for one app and a per-message identifier for the other, and **no dedupe or grouping rule may assume either**. Left out of FR-8 pending more apps.
+
+**Not verified — the sweep did not happen.** The phone disconnected from USB at 21:56 and killed the capture. Telegram, Messenger, Viber, Instagram and Teams remain untested. **Discord is recorded as untested by decision**, not oversight: OS-side it was fully permitted to notify (POST_NOTIFICATIONS granted, `importance=DEFAULT`, DND off, standby bucket 10/ACTIVE, not in foreground), so the block was inside Discord — most likely its Push Notification Inactive Timeout routing the mention to an active desktop client. Effie chose to move on rather than sink time into it. Gmail's `BigTextStyle` is not a substitute for the untested `MessagingStyle` apps.
+
+### Key capture rows on a per-delivery id instead of the notification key
+**Type:** Fixed
+**Time:** 21:30 +08:00
+**Files:** `app/App.tsx`
+**Related:** FR-8, FR-20, §10 M0, §10 M1
+
+The M0 list used `StatusBarNotification.key` as its React key, which React reported as `Encountered two children with the same key` for both WhatsApp and SystemUI. Added a `CaptureRow` type carrying a `captureId` assigned per delivery from a `useRef` counter, and keyed the `FlatList` on that.
+
+**Why the old key was wrong, not merely unlucky:** `key` identifies the *notification*, and Android holds it stable while an app updates that notification in place — which is exactly the behaviour recorded under FR-8 an hour earlier. A list that appends every delivery therefore collides by construction, and any app that updates a notification triggers it. SystemUI's `charging_state` did so once a minute.
+
+**Deliberately not deduplicated.** Collapsing re-posts in the UI would have silenced the warning too, and it was the wrong fix: the spike exists to measure capture volume, and duplicate rows are the raw evidence feeding FR-8's dedupe design and FR-9's rate limit. Suppression belongs at M4, downstream of a measurement that must stay visible until then.
+
+**The counter is incremented in the event handler, not the state updater** — React may invoke an updater more than once for a delivery, which would burn ids and, under a future concurrent render, could hand two rows the same one.
+
+**Separate finding, from the same error text: WhatsApp's notification key contains a literal newline**, between the tag and the uid. Confirmed at byte level in the capture log — it is why logcat split every WhatsApp line in two and re-stamped the continuation with a fresh timestamp, an artifact previously misread as ordinary wrapping. Harmless inside JSON, which escapes it, but any line-delimited framing or naive log parsing at M1 will mangle it and present as a delivery fault.
+
+**Also: WhatsApp's tag is a conversation identifier, not a message one.** All nine per-chat notifications in the window shared one tag and all nine summaries shared a null tag. Same shape as the Messenger thread ID noted 2026-08-11, and a grouping key for FR-20 available without reading content.
+
+**Unexplained, recorded rather than smoothed over:** the React error renders the tag as ending `c4=0` before the newline where logcat renders it ending `c4=`. A one-character difference between two renderings of the same key. It does not affect the fix and was not chased further.
+
+**Verified:** `npx tsc --noEmit` clean. **Not verified:** the warning was not observed to stop on device — the fix relies on Metro hot-reloading and the app was mid-capture-sweep, so no fresh duplicate-key error has been confirmed absent.
+
+### Verify FR-36 and the MessagingStyle capture path against real WhatsApp traffic
+**Type:** Added
+**Time:** 21:24 +08:00
+**Files:** `notification-sync-prd.md`
+**Related:** FR-6, FR-8, FR-9, FR-36, §10 M0, §10 M1
+
+Ran the M0 spike on the Samsung A52 against real incoming WhatsApp messages and read the field-presence diagnostics. Both items M0 was carrying as unproven are now settled, and both PRD requirements carry the measurement.
+
+**FR-36 fires, on the flag it targets.** Nine messages produced nine per-chat notifications and nine group summaries; all nine summaries were skipped, all nine per-chat notifications captured, one summary per message. **The `ranker_group` worry was unfounded** — WhatsApp's own summary carries `FLAG_GROUP_SUMMARY`, and no `ranker_group` appeared in the window at all. This was the open question that mattered most: FR-36 had been shipped without its code path ever executing.
+
+**`EXTRA_TITLE` + `EXTRA_TEXT` is sufficient for real `MessagingStyle`.** Every WhatsApp per-chat notification populated both, with `bigText` null and `textLines` empty. No `MessagingStyle` fallback is needed, which was the previous session's "first thing to check before M1". Synthetic notifications had suggested this; real ones confirm it.
+
+**A null tag does not imply a summary.** WhatsApp posts a second notification (id 11, null tag, no style template) that populates both text fields and is correctly captured. Any future summary detection must use the flag, not the tag.
+
+**New, for FR-8:** one chat's notification is re-posted under a single unchanging key while `EXTRA_MESSAGES` accumulates 2→3→4→5→6→7, then three further re-posts with the array still at 7, the last eleven seconds after. Whether those tail re-posts carry new text is **not knowable from a presence-only log**, so whether FR-8's `(package, title, body)` key collapses them is unresolved — deliberately left to M4 rather than guessed at now.
+
+**More FR-9 evidence:** eight per-chat captures inside 5.6 seconds, well past the 10/minute default, consistent with 2026-08-11's Gmail finding. Still not changing the number — see FR-9's note.
+
+**Why record all of this rather than just fixing code:** none of it required a code change, and that is the point. The value was in converting two assumptions into measurements before M1 puts a network between capture and display, where a blank-body bug would present as a delivery fault rather than a capture one.
+
+**Not verified:** WhatsApp only, Samsung only. Telegram, Signal, Discord and Messenger are untested and are not covered by the `MessagingStyle` finding. No screenshot of the device was taken and no notification content was logged or read, so all conclusions rest on field presence and structural counts.
+
+### Correct the run directory for `expo run:android`
+**Type:** Fixed
+**Time:** 21:24 +08:00
+**Files:** — (no file changed; operational note)
+**Related:** —
+
+`npx expo run:android` was run from the repository root, where there is no `package.json`, producing `ConfigError` and prompting npm to fetch a throwaway `expo@57.0.12`. All Expo commands run from `app/`, which pins `expo@~57.0.11`. Recorded because the same mistake is likely to recur and the error message names a missing root `package.json` rather than the wrong working directory.
+
+**Also noted:** the device runs a Secure Folder profile as user 150, so a bare `adb shell pm list packages` fails with a `SecurityException` rather than listing anything. Use `--user 0`.
+
 ## 2026-08-11
 
 ### Add FR-36 (drop group summaries) and field-presence diagnostics

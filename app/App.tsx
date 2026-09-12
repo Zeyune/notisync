@@ -1,5 +1,5 @@
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AppState,
   FlatList,
@@ -33,9 +33,27 @@ export default function App() {
   );
 }
 
+/**
+ * One row of the capture log — a notification *as captured*, not a notification.
+ *
+ * The distinction matters. `StatusBarNotification.key` identifies the
+ * notification, and Android keeps it stable while an app updates that
+ * notification in place: WhatsApp re-posts a chat under one unchanging key as
+ * messages arrive, and SystemUI re-posts `charging_state` about once a minute.
+ * Keying rows on it therefore collides, which React reports as duplicate keys.
+ *
+ * `captureId` is assigned per delivery instead, so each capture is its own row.
+ * Collapsing re-posts here would be the wrong fix at M0 — the spike exists to
+ * measure capture volume, and duplicate rows are the evidence feeding FR-8's
+ * dedupe design and FR-9's rate limit. Suppression belongs at M4, downstream of
+ * a measurement that has to stay visible until then.
+ */
+type CaptureRow = CapturedNotification & { captureId: number };
+
 function CaptureScreen() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
-  const [items, setItems] = useState<CapturedNotification[]>([]);
+  const [items, setItems] = useState<CaptureRow[]>([]);
+  const nextCaptureId = useRef(0);
 
   const refreshPermission = useCallback(() => {
     const granted = NotificationListener.isEnabled();
@@ -59,7 +77,11 @@ function CaptureScreen() {
 
   useEffect(() => {
     const sub = NotificationListener.addNotificationListener((notification) => {
-      setItems((prev) => [notification, ...prev].slice(0, 200));
+      // Incremented here rather than inside the updater: React may invoke an
+      // updater more than once for the same delivery, which would burn ids and,
+      // under a future concurrent render, hand two rows the same one.
+      const captureId = nextCaptureId.current++;
+      setItems((prev) => [{ ...notification, captureId }, ...prev].slice(0, 200));
     });
     return () => sub.remove();
   }, []);
@@ -108,7 +130,7 @@ function CaptureScreen() {
 
       <FlatList
         data={items}
-        keyExtractor={(item) => item.key}
+        keyExtractor={(item) => String(item.captureId)}
         contentContainerStyle={items.length === 0 && styles.emptyContainer}
         ListEmptyComponent={
           <Text style={styles.empty}>
