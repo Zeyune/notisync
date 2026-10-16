@@ -19,7 +19,10 @@ import {
 import NotificationListener, {
   CapturedNotification,
 } from "./modules/notification-listener";
-import { sendToReceiver, toForwarded } from "./lanForwarding";
+import { toForwarded } from "./lanForwarding";
+import { forwardNotification } from "./forwarding";
+import type { Transport } from "./forwarding";
+import { deliverySummary } from "./deliveryStore";
 import {
   currentPairing,
   initPairing,
@@ -28,23 +31,13 @@ import {
   unpair,
 } from "./pairingState";
 import { relayUrl, setRelayUrl } from "./relayClient";
-import { registerForPush } from "./push";
+import { registerForPush, startPushLifecycle } from "./push";
 import type { PushState } from "./push";
 
 /**
- * M2, first slice (see notification-sync-prd.md §10).
- *
- * M0 proved capture. M1 proved the wire shape by forwarding it in the clear and
- * confirmed §7's `ForwardedNotification` needs no extra fields. M2 encrypts it:
- * payloads now leave as AES-256-GCM ciphertext per §12 Q2.
- *
- * Pairing (FR-1, FR-2) now works by manual code entry, and the derived key is
- * persisted to Keystore/Keychain (FR-3). An **unpaired** device still falls back
- * to the public development key in `crypto.ts` — encryption with a key anyone
- * can read — which is why the pairing card states which key is in use.
- *
- * Still absent: QR rendering and scanning, a receiver mode, filtering, queueing,
- * retry, discovery, and a foreground service.
+ * M3 Android relay sender/receiver. LAN remains an explicit development mode.
+ * Sender capture requires the JS runtime; foreground-service hardening is M5.
+ * Filtering and QR scanning remain deferred by the approved M3 plan.
  */
 export default function App() {
   return (
@@ -85,7 +78,7 @@ type CaptureRow = CapturedNotification & {
 type ForwardState =
   | { state: "off" }
   | { state: "pending" }
-  | { state: "sent" }
+  | { state: "sent"; detail: string }
   | { state: "failed"; error: string };
 
 /**
@@ -128,8 +121,8 @@ function CaptureScreen() {
    */
   const [host, setHost] = useState("127.0.0.1:8787");
   const [forwarding, setForwarding] = useState(false);
+  const [transport, setTransport] = useState<Transport>("relay");
   const [testResult, setTestResult] = useState<string | null>(null);
-  const nextSeq = useRef(1);
 
   // The capture subscription is set up once, so reading `host` and `forwarding`
   // directly inside it would capture their first values forever. Mirroring them
@@ -137,8 +130,10 @@ function CaptureScreen() {
   // rebuilding the native listener subscription on every keystroke.
   const hostRef = useRef(host);
   const forwardingRef = useRef(forwarding);
+  const transportRef = useRef(transport);
   hostRef.current = host;
   forwardingRef.current = forwarding;
+  transportRef.current = transport;
 
   const refreshPermission = useCallback(() => {
     const granted = NotificationListener.isEnabled();
@@ -189,22 +184,11 @@ function CaptureScreen() {
 
       if (!shouldForward) return;
 
-      // Sequence numbers are consumed only by notifications actually sent, so a
-      // gap at the receiver means a lost delivery (FR-26) rather than one the
-      // user chose not to forward. Taken here, before the await, so concurrent
-      // captures cannot interleave and produce out-of-order numbering.
-      const seq = nextSeq.current++;
-      const payload = toForwarded(notification, seq, DEVICE_LABEL);
-
-      // Deliberately not awaited: the listener callback is a native event
-      // handler, and blocking it would apply backpressure to capture itself.
-      // Dropping a send on failure is correct for M1 — queueing and retry are
-      // M3, and inventing them here would hide exactly the losses M1 should
-      // surface.
-      void sendToReceiver(hostRef.current, payload).then((result) => {
+      // Encryption and durable numbering/queueing run outside the native callback.
+      void forwardNotification(seq => toForwarded(notification, seq, DEVICE_LABEL), transportRef.current, hostRef.current).then((result) => {
         markForwarded(
           captureId,
-          result.ok ? { state: "sent" } : { state: "failed", error: result.error },
+          result.ok ? { state: "sent", detail: result.status } : { state: "failed", error: result.error },
         );
       });
     });
@@ -224,7 +208,7 @@ function CaptureScreen() {
     <>
       <View style={styles.header}>
         <Text style={styles.title}>NotifSync</Text>
-        <Text style={styles.subtitle}>M2 — AES-256-GCM, derived keys</Text>
+        <Text style={styles.subtitle}>M3 — encrypted relay delivery</Text>
       </View>
 
       <View style={styles.permissionCard}>
@@ -264,7 +248,16 @@ function CaptureScreen() {
           </View>
           <Switch value={forwarding} onValueChange={setForwarding} />
         </View>
-        <TextInput
+        <View style={styles.forwardRow}>
+          <Pressable style={styles.buttonSecondary} onPress={() => setTransport("relay")}>
+            <Text style={styles.buttonSecondaryText}>{transport === "relay" ? "✓ Relay" : "Use relay"}</Text>
+          </Pressable>
+          <Pressable style={styles.buttonSecondary} onPress={() => setTransport("lan")}>
+            <Text style={styles.buttonSecondaryText}>{transport === "lan" ? "✓ LAN test" : "Use LAN test"}</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.keyNotice}>Keep the sender app running during M3 tests. Capture while its JS runtime is absent is not implemented.</Text>
+        {transport === "lan" && <TextInput
           style={styles.input}
           value={host}
           onChangeText={setHost}
@@ -273,7 +266,7 @@ function CaptureScreen() {
           autoCorrect={false}
           keyboardType="numbers-and-punctuation"
           inputMode="url"
-        />
+        />}
         <Pressable
           style={styles.buttonSecondary}
           onPress={() => {
@@ -281,17 +274,16 @@ function CaptureScreen() {
             // notification. Wrong IP, wrong port, phone on mobile data and
             // laptop firewall are all the same symptom — nothing arrives — and
             // this separates "the network is wrong" from "capture is wrong".
-            const seq = nextSeq.current++;
-            void sendToReceiver(host, {
+            void forwardNotification(seq => ({
               id: `test-${seq}`,
               seq,
               sourceApp: "NotifSync (test)",
               title: "Test payload",
-              body: "If this prints on the laptop, the LAN path works.",
+              body: "M3 QA: verify this notification on the paired receiver.",
               timestamp: Date.now(),
               deviceLabel: DEVICE_LABEL,
-            }).then((result) => {
-              setTestResult(result.ok ? "sent ✓" : `failed — ${result.error}`);
+            }), transport, host).then((result) => {
+              setTestResult(result.ok ? result.status : `failed — ${result.error}`);
             });
             setTestResult("sending…");
           }}
@@ -358,7 +350,7 @@ function CaptureScreen() {
                 ]}
               >
                 {item.forward.state === "pending" && "forwarding…"}
-                {item.forward.state === "sent" && "forwarded ✓"}
+                {item.forward.state === "sent" && item.forward.detail}
                 {item.forward.state === "failed" &&
                   `not forwarded — ${item.forward.error}`}
               </Text>
@@ -401,15 +393,11 @@ function PairingCard() {
       .then(() => {
         if (cancelled) return;
         const payload = myPairingPayload(Platform.OS === "android" ? "android" : "ios");
-        const json = JSON.stringify(payload);
-        // Public by design — the private half never leaves `pairingState`.
-        // Logged so it can be read off `adb logcat` while there is no QR to scan.
-        console.log(`NotifSync pairing code: ${json}`);
-        setMyCode(json);
+        setMyCode(JSON.stringify(payload));
         setPairing(currentPairing());
       })
       .catch((e: unknown) => {
-        if (!cancelled) setStatus(`secure storage failed — ${String(e)}`);
+        if (!cancelled) setStatus("secure storage failed; identity was not replaced");
       });
     return () => {
       cancelled = true;
@@ -440,13 +428,11 @@ function PairingCard() {
         {pairing.paired ? `paired with ${pairing.peerDeviceId}` : "not paired"}
       </Text>
 
-      {/* Which key is actually protecting the payload. Stated because an
-          unpaired device still encrypts — with a key published on GitHub — and
-          "encrypted" on its own would be a misleading thing to show. */}
+      {/* Compare these fingerprints crosswise on the two phones. */}
       <Text style={styles.keyNotice}>
         {pairing.paired
           ? `key: derived · ${pairing.fingerprint}`
-          : "key: PUBLIC development key — not secret"}
+          : "Pair a device before forwarding. Reinstall or data clear requires re-pairing."}
       </Text>
 
       <Text style={styles.codeLabel}>This device's code</Text>
@@ -470,7 +456,7 @@ function PairingCard() {
           void pairWith(peerCode).then((result) => {
             setStatus(result.ok ? "paired ✓" : `failed — ${result.error}`);
             setPairing(currentPairing());
-          });
+          }).catch(() => setStatus("could not persist pairing"));
         }}
       >
         <Text style={styles.buttonSecondaryText}>Pair</Text>
@@ -483,7 +469,7 @@ function PairingCard() {
             void unpair().then(() => {
               setPairing(currentPairing());
               setStatus("unpaired");
-            });
+            }).catch(() => setStatus("could not remove stored pairing"));
           }}
         >
           <Text style={styles.buttonSecondaryText}>Unpair</Text>
@@ -510,6 +496,19 @@ function RelayCard() {
   const [url, setUrl] = useState<string | null>(null);
   const [push, setPush] = useState<PushState | null>(null);
   const [busy, setBusy] = useState(false);
+  const [summary, setSummary] = useState("Loading delivery state…");
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+
+  useEffect(() => startPushLifecycle(setPush), []);
+  useEffect(() => {
+    let cancelled = false;
+    const update = () => void deliverySummary().then(value => {
+      if (!cancelled) setSummary(value);
+    }).catch(() => { if (!cancelled) setSummary("Delivery storage unavailable"); });
+    update();
+    const timer = setInterval(update, 3000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -525,6 +524,7 @@ function RelayCard() {
     setBusy(true);
     void registerForPush()
       .then((state) => setPush(state))
+      .catch(() => setSettingsError("registration failed"))
       .finally(() => setBusy(false));
   }, []);
 
@@ -556,12 +556,18 @@ function RelayCard() {
         style={styles.input}
         value={url ?? ""}
         onChangeText={setUrl}
-        onEndEditing={() => url && void setRelayUrl(url)}
-        placeholder="http://192.168.1.11:8788"
+        placeholder="https://your-relay.workers.dev"
         autoCapitalize="none"
         autoCorrect={false}
         inputMode="url"
       />
+
+      <Pressable style={styles.buttonSecondary} onPress={() => {
+        if (url) void setRelayUrl(url).then(() => { setSettingsError(null); register(); })
+          .catch(() => setSettingsError("Enter an HTTPS relay origin; settings were not saved."));
+      }}>
+        <Text style={styles.buttonSecondaryText}>Save relay URL</Text>
+      </Pressable>
 
       <Pressable style={styles.buttonSecondary} onPress={register} disabled={busy}>
         <Text style={styles.buttonSecondaryText}>
@@ -569,11 +575,9 @@ function RelayCard() {
         </Text>
       </Pressable>
 
-      {!!push?.token && (
-        <Text style={styles.code} numberOfLines={2}>
-          FCM token: {push.token}
-        </Text>
-      )}
+      <Text style={styles.keyNotice}>{push?.token ? "FCM token acquired (hidden)" : "FCM token unavailable"} · receiver {push?.receiverReady ? "ready" : "unavailable"}</Text>
+      <Text style={styles.testResult}>{summary}</Text>
+      {!!settingsError && <Text style={[styles.testResult, styles.notGranted]}>{settingsError}</Text>}
       {!!push?.error && <Text style={[styles.testResult, styles.notGranted]}>{push.error}</Text>}
     </View>
   );

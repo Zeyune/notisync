@@ -19,27 +19,14 @@ import { createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 /**
- * ⚠ DEVELOPMENT KEY — PUBLIC AND WORTHLESS. Mirrors app/crypto.ts. ⚠
- *
- * Committed to a public repository on purpose: it lets the sender and this
- * throwaway receiver agree on a key before FR-2's pairing exists. Both copies
- * get deleted when the QR exchange lands.
- */
-const DEVELOPMENT_KEY = Buffer.from(
-  "PgZO+T2I2lS82EC/U2REy7DqjlD5LWgJtTtd5/dRmRw=",
-  "base64",
-);
-
-/**
- * Prefers a real paired key over the development one.
+ * Requires the paired session written by the development peer.
  *
  * `app/pairingPeer.mts` writes the key it derived when standing in as a second
  * device. Once the phone has paired, it seals with its derived send key and the
  * development key stops working — so reading this file is what lets the receiver
  * follow a pairing instead of being cut off by it.
  *
- * Absent means nobody has paired yet, which is the normal starting state rather
- * than an error.
+ * Absent or invalid refuses startup; there is no public-key fallback.
  */
 function activeKey() {
   try {
@@ -51,8 +38,7 @@ function activeKey() {
     console.log("Using the paired session key from tools/peer-session.json");
     return key;
   } catch {
-    console.log("No pairing found — using the public development key");
-    return DEVELOPMENT_KEY;
+    throw new Error("No paired session key; run app/pairingPeer.mts first");
   }
 }
 
@@ -153,7 +139,7 @@ const server = createServer((req, res) => {
     try {
       payload = open(JSON.parse(raw));
     } catch (e) {
-      console.error(`  ✗ could not open envelope: ${e.message}`);
+      console.error("  ✗ could not authenticate envelope");
       res.writeHead(400).end("bad envelope\n");
       return;
     }
@@ -209,10 +195,7 @@ function report(n, bytes) {
   const lagLabel = lag < 0 ? `${lag}ms (clock skew)` : `+${lag}ms`;
 
   console.log(
-    `\n[${received}] seq=${n.seq} ${device} · ${bytes}B · ${lagLabel}\n` +
-      `  ${n.sourceApp} · ${at}\n` +
-      `  ${n.title ?? "(no title)"}\n` +
-      `  ${n.body ?? "(no body)"}`,
+    `[${received}] authenticated payload · seq=${n.seq} · ${bytes}B · ${lagLabel}`,
   );
 
   // The one assertion worth making automatically. PRD §7 states that

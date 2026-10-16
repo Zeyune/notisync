@@ -108,8 +108,11 @@ async function handleRegister(request: Request, env: Env): Promise<Response> {
     fcmToken?: string;
   } | null;
 
-  if (!body?.publicKey || !PUBLIC_KEY_PATTERN.test(body.publicKey)) {
+  if (typeof body?.publicKey !== "string" || !PUBLIC_KEY_PATTERN.test(body.publicKey)) {
     return json({ error: "publicKey must be a 43-character base64url X25519 key" }, 400);
+  }
+  if (body.fcmToken != null && (typeof body.fcmToken !== "string" || body.fcmToken.length > 4096)) {
+    return json({ error: "invalid push token" }, 400);
   }
 
   const now = Math.floor(Date.now() / 1000);
@@ -160,7 +163,7 @@ async function handleSend(request: Request, env: Env): Promise<Response> {
     ciphertext?: string;
   } | null;
 
-  if (!body?.target || !PUBLIC_KEY_PATTERN.test(body.target)) {
+  if (typeof body?.target !== "string" || !PUBLIC_KEY_PATTERN.test(body.target)) {
     return json({ error: "target must be a 43-character base64url X25519 key" }, 400);
   }
   if (!body.ciphertext || typeof body.ciphertext !== "string") {
@@ -168,6 +171,9 @@ async function handleSend(request: Request, env: Env): Promise<Response> {
   }
   if (body.ciphertext.length > MAX_CIPHERTEXT_BYTES) {
     return json({ error: "ciphertext too large" }, 413);
+  }
+  if (body.ciphertext.length < 40 || body.ciphertext.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(body.ciphertext)) {
+    return json({ error: "ciphertext must be a base64 sealed payload" }, 400);
   }
 
   const id = randomToken(16);
@@ -204,15 +210,15 @@ async function handleSend(request: Request, env: Env): Promise<Response> {
     if (push.tokenInvalid) {
       // The token will never work again; keeping it would fail every future
       // send in exactly the same silent way.
-      await env.DB.prepare("UPDATE devices SET fcm_token = NULL WHERE public_key = ?")
-        .bind(body.target)
+      await env.DB.prepare("UPDATE devices SET fcm_token = NULL WHERE public_key = ? AND fcm_token = ?")
+        .bind(body.target, target.fcm_token)
         .run();
     }
     // Never log `push.error` verbatim: FCM echoes the registration token in some
     // error bodies, and §7 does not put an operator-readable device token in the
     // logs. The sender is told; the log is not.
     console.log(`push failed for a device (tokenInvalid=${push.tokenInvalid})`);
-    return json({ id, pushed: false, reason: push.error }, 202);
+    return json({ id, pushed: false, reason: "FCM delivery attempt failed" }, 202);
   }
 
   return json({ id, pushed: true, inline }, 202);
@@ -262,6 +268,17 @@ async function handleAck(request: Request, env: Env): Promise<Response> {
   return json({ deleted: result.meta.changes ?? 0 });
 }
 
+/** Bounded, recipient-authenticated catch-up for missed pushes/token changes. */
+async function handlePending(request: Request, env: Env): Promise<Response> {
+  const caller = await authenticate(request, env);
+  if (!caller) return json({ error: "unauthorized" }, 401);
+  const cutoff = Math.floor(Date.now() / 1000) - (Number(env.BLOB_TTL_SECONDS) || 86400);
+  const rows = await env.DB.prepare(
+    "SELECT id, sender, ciphertext FROM blobs WHERE target = ? AND created_at >= ? ORDER BY created_at, id LIMIT 50",
+  ).bind(caller.public_key, cutoff).all();
+  return json({ blobs: rows.results });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -279,6 +296,7 @@ export default {
     if (request.method === "GET" && path.startsWith("/blob/")) {
       return handleFetch(path.slice("/blob/".length), request, env);
     }
+    if (request.method === "GET" && path === "/pending") return handlePending(request, env);
     if (request.method === "GET" && path === "/health") {
       return json({ ok: true });
     }

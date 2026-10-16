@@ -59,6 +59,8 @@ class NotifSyncListenerService : NotificationListenerService() {
   }
 
   override fun onNotificationPosted(sbn: StatusBarNotification) {
+    // A displayed relay notification must never be captured and bounced back.
+    if (sbn.packageName == packageName) return
     val emit = emitter
     if (emit == null) {
       // Not an error: the service outlives the JS runtime, so posts arriving
@@ -77,7 +79,7 @@ class NotifSyncListenerService : NotificationListenerService() {
     // there is no configuration under which this is wanted, so it is dropped at
     // capture rather than left to M4's filtering.
     if ((flags and Notification.FLAG_GROUP_SUMMARY) != 0) {
-      Log.d(TAG, "skipped group summary ${sbn.packageName} key=${sbn.key}")
+      Log.d(TAG, "skipped group summary")
       return
     }
 
@@ -123,7 +125,7 @@ class NotifSyncListenerService : NotificationListenerService() {
 
     Log.d(
       TAG,
-      "captured ${sbn.packageName} key=${sbn.key} style=$style " +
+      "captured notification style=$style " +
         "title=${presence(extras.getCharSequence(Notification.EXTRA_TITLE))} " +
         "text=${presence(extras.getCharSequence(Notification.EXTRA_TEXT))} " +
         "bigText=${presence(extras.getCharSequence(Notification.EXTRA_BIG_TEXT))} " +

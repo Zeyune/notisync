@@ -70,8 +70,8 @@ export type SendResult =
 /**
  * POSTs one notification to the M1 receiver.
  *
- * Plain HTTP, no retry, no queue, no encryption — all four arrive later and
- * none of them belong in a milestone that gets deleted at M3. Cleartext works
+ * Local HTTP carrying a paired AES-GCM envelope. This explicit development
+ * transport has no durable retry queue. Local HTTP works
  * because the React Native debug manifest sets `usesCleartextTraffic="true"`;
  * a release build would not, which is fine, because this code never ships.
  *

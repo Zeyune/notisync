@@ -1,6 +1,7 @@
 # IDE
 .idea/
 .vscode/
+.verification/
 
 # OS
 Thumbs.db

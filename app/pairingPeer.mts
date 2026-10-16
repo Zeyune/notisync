@@ -2,7 +2,7 @@
  * Stands in for a second device during pairing, so FR-2 can be exercised
  * against real hardware with only one phone.
  *
- * Give it the phone's public key (printed to logcat by `PairingCard`) and it
+ * Give it the phone's public key (shown on screen by `PairingCard`) and it
  * prints two things: a pairing payload to type into the phone, and the
  * fingerprint the phone must display once it pairs.
  *
@@ -73,7 +73,7 @@ console.log(
     v: 1,
     deviceId: "node-peer",
     pk: toBase64Url(publicKey),
-    token: toBase64Url(new Uint8Array(randomBytes(16))),
+    token: "", // This is the manual development path, not a short-lived QR token.
   }),
 );
 

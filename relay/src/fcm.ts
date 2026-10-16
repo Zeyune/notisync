@@ -80,6 +80,7 @@ async function accessToken(account: ServiceAccount): Promise<string> {
   const jwt = `${header}.${claim}.${base64UrlEncode(new Uint8Array(signature))}`;
 
   const response = await fetch(account.token_uri, {
+    signal: AbortSignal.timeout(3000),
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -89,7 +90,7 @@ async function accessToken(account: ServiceAccount): Promise<string> {
   });
 
   if (!response.ok) {
-    throw new Error(`token exchange failed: HTTP ${response.status} ${await response.text()}`);
+    throw new Error(`token exchange failed: HTTP ${response.status}`);
   }
 
   const body = (await response.json()) as { access_token: string; expires_in: number };
@@ -133,14 +134,16 @@ export async function sendPush(
   } catch (e) {
     return {
       ok: false,
-      error: e instanceof Error ? e.message : String(e),
+      error: "FCM authentication failed",
       tokenInvalid: false,
     };
   }
 
-  const response = await fetch(
+  let response: Response;
+  try { response = await fetch(
     `https://fcm.googleapis.com/v1/projects/${account.project_id}/messages:send`,
     {
+      signal: AbortSignal.timeout(5000),
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
@@ -150,23 +153,25 @@ export async function sendPush(
         message: {
           token: fcmToken,
           data,
-          android: { priority: "high" },
+          android: { priority: "high", ttl: "86400s" },
         },
       }),
     },
-  );
+  ); } catch { return { ok: false, error: "FCM network failure", tokenInvalid: false }; }
 
   if (response.ok) return { ok: true };
 
-  const text = await response.text();
   // 404 UNREGISTERED / 400 INVALID_ARGUMENT on the token mean this device can
   // never be reached with it again. Distinguished from transient failures so the
   // caller can drop the stale token instead of retrying it forever — a stale
   // token otherwise fails silently, which is the one outcome FR-25 and FR-33
   // exist to prevent.
-  const tokenInvalid =
-    response.status === 404 ||
-    (response.status === 400 && text.includes("INVALID_ARGUMENT"));
+  // INVALID_ARGUMENT can describe a malformed message, not a stale device token.
+  const body = await response.json().catch(() => null) as {
+    error?: { details?: Array<{ "@type"?: string; errorCode?: string }> }
+  } | null;
+  const tokenInvalid = Array.isArray(body?.error?.details) && body.error.details.some(detail =>
+    detail["@type"] === "type.googleapis.com/google.firebase.fcm.v1.FcmError" && detail.errorCode === "UNREGISTERED");
 
-  return { ok: false, error: `FCM HTTP ${response.status}: ${text}`, tokenInvalid };
+  return { ok: false, error: `FCM HTTP ${response.status}`, tokenInvalid };
 }

@@ -1,7 +1,10 @@
 import * as Notifications from "expo-notifications";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 
 import { registerWithRelay } from "./relayClient";
+import { initPairing } from "./pairingState";
+import { ensureReceiverChannel, ensureReceiverTask, recoverDeliveries } from "./receiver";
+import { flushOutbox } from "./forwarding";
 
 /**
  * Push registration (FR-16, FR-31).
@@ -24,6 +27,7 @@ export type PushState = {
   permissionGranted: boolean;
   token: string | null;
   error: string | null;
+  receiverReady?: boolean;
 };
 
 /**
@@ -32,11 +36,13 @@ export type PushState = {
  * Needed because a hung promise and a slow one are indistinguishable to a
  * caller, and only one of them is worth waiting for.
  */
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_resolve, reject) => setTimeout(() => reject(new Error(message)), ms)),
-  ]);
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<T>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+    })]);
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 /**
@@ -48,6 +54,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
  * result is surfaced in the UI rather than requested and forgotten.
  */
 export async function ensureNotificationPermission(): Promise<boolean> {
+  await ensureReceiverChannel();
   const existing = await Notifications.getPermissionsAsync();
   if (existing.granted) return true;
   if (!existing.canAskAgain) return false;
@@ -64,14 +71,22 @@ export async function ensureNotificationPermission(): Promise<boolean> {
  * relay accepts the send, FCM discards it, and nothing on either device says so.
  * Re-registering is one cheap request and removes that failure mode.
  */
-export async function registerForPush(): Promise<PushState> {
+export async function registerForPush(requestPermission = true): Promise<PushState> {
   if (Platform.OS !== "android") {
     // iOS is deferred: FR-35's Notification Service Extension needs a Mac and an
     // Apple Developer membership. See notification-sync-m3-plan.md.
     return { permissionGranted: false, token: null, error: "iOS receiver not implemented" };
   }
 
-  const permissionGranted = await ensureNotificationPermission();
+  let permissionGranted = false;
+  try {
+    await initPairing();
+    await ensureReceiverChannel();
+    await ensureReceiverTask();
+    permissionGranted = requestPermission
+      ? await ensureNotificationPermission()
+      : (await Notifications.getPermissionsAsync()).granted;
+  } catch { return { permissionGranted, token: null, receiverReady: false, error: "identity or background receiver setup failed" }; }
 
   let token: string | null = null;
   try {
@@ -96,17 +111,57 @@ export async function registerForPush(): Promise<PushState> {
     return {
       permissionGranted,
       token: null,
-      error: `could not get FCM token — ${e instanceof Error ? e.message : String(e)}`,
+      receiverReady: true,
+      error: "could not get FCM token within 60s; check Google Play services and network",
     };
   }
 
-  const registered = await registerWithRelay(token);
+  if (!token) return { permissionGranted, token: null, receiverReady: true, error: "no Android FCM token" };
+  let registered;
+  try { registered = await registerWithRelay(token); }
+  catch { return { permissionGranted, token, receiverReady: true, error: "could not persist relay registration" }; }
   if (!registered.ok) {
     // The token exists but the relay does not know it, so this device is
     // unreachable. Reported rather than swallowed — an unreachable receiver is
     // indistinguishable from a working one until a notification goes missing.
-    return { permissionGranted, token, error: `relay registration failed — ${registered.error}` };
+    return { permissionGranted, token, receiverReady: true, error: `relay registration failed — ${registered.error}` };
   }
 
-  return { permissionGranted, token, error: null };
+  return { permissionGranted, token, receiverReady: true, error: null };
+}
+
+/** Every foreground launch/resume re-reads FCM's current token. A native refresh
+ * event is also synced while JS is alive; a refresh while JS is absent is caught
+ * on next resume. No assumption that the old token survives reinstall is made. */
+export function startPushLifecycle(onState: (state: PushState) => void): () => void {
+  let disposed = false;
+  let refreshing: Promise<void> | null = null;
+  const sync = (requestPermission = false) => {
+    if (refreshing) return;
+    refreshing = (async () => {
+      const state = await registerForPush(requestPermission);
+      if (!disposed) onState(state);
+      if (!state.error) await recoverDeliveries();
+      await flushOutbox();
+    })().catch(() => {
+      if (!disposed) onState({ permissionGranted: false, token: null, error: "push lifecycle or delivery recovery failed" });
+    }).finally(() => { refreshing = null; });
+  };
+  sync(true);
+  const resume = AppState.addEventListener("change", state => { if (state === "active") sync(); });
+  const tokens = Notifications.addPushTokenListener(token => {
+    if (typeof token.data !== "string") return;
+    void registerWithRelay(token.data).then(result => {
+      if (!result.ok && !disposed) onState({ permissionGranted: false, token: null, error: "FCM token refresh registration failed" });
+    }).catch(() => {
+      if (!disposed) onState({ permissionGranted: false, token: null, error: "FCM token refresh storage failed" });
+    });
+  });
+  const retry = setInterval(() => {
+    if (AppState.currentState === "active") {
+      void flushOutbox().catch(() => undefined);
+      void recoverDeliveries().catch(() => undefined);
+    }
+  }, 15_000);
+  return () => { disposed = true; resume.remove(); tokens.remove(); clearInterval(retry); };
 }

@@ -35,6 +35,7 @@ let peerDeviceId: string | null = null;
 /** The peer's base64url public key — also its relay address (M3). */
 let storedPeerPublic: string | null = null;
 let ready = false;
+let loading: Promise<void> | null = null;
 
 function toBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -59,12 +60,25 @@ function fromBase64Url(value: string): Uint8Array {
  * version did, and it silently produced a *new* device identity whenever module
  * state was lost, which looked like the pairing spontaneously breaking.
  */
-export async function initPairing(): Promise<void> {
-  if (ready) return;
+export function initPairing(): Promise<void> {
+  if (ready) return Promise.resolve();
+  if (!loading) loading = loadPairing().catch(error => {
+    loading = null;
+    identity = null;
+    sessionKeys = null;
+    storedPeerPublic = null;
+    peerDeviceId = null;
+    throw error;
+  });
+  return loading;
+}
+
+async function loadPairing(): Promise<void> {
 
   const storedSecret = await SecureStore.getItemAsync(IDENTITY_SECRET);
   if (storedSecret) {
     const secretKey = fromBase64(storedSecret);
+    if (secretKey.length !== 32) throw new Error("stored identity is invalid; do not regenerate it silently");
     // Public key is derived rather than stored: it is a pure function of the
     // secret, and storing both invites them to disagree.
     const { publicKey } = identityFromSecret(secretKey);
@@ -148,6 +162,7 @@ export type PairResult =
  * Comparing four bytes on two screens localises it in seconds.
  */
 export async function pairWith(raw: string): Promise<PairResult> {
+  await initPairing();
   const trimmed = raw.trim();
   if (!trimmed) return { ok: false, error: "nothing entered" };
 
@@ -166,10 +181,11 @@ export async function pairWith(raw: string): Promise<PairResult> {
     payload = { v: 1, deviceId: "manual", pk: trimmed, token: "" };
   }
 
-  if (payload.v !== 1) {
-    return { ok: false, error: `unsupported pairing version ${payload.v}` };
+  if (!payload || typeof payload !== "object" || payload.v !== 1) {
+    return { ok: false, error: "unsupported pairing payload" };
   }
-  if (!payload.pk) return { ok: false, error: "no public key in payload" };
+  if (typeof payload.pk !== "string" || typeof payload.deviceId !== "string" ||
+      !/^[A-Za-z0-9_-]{43}$/.test(payload.pk)) return { ok: false, error: "invalid public key or device ID" };
 
   let theirPublicKey: Uint8Array;
   try {
@@ -182,14 +198,21 @@ export async function pairWith(raw: string): Promise<PairResult> {
   }
 
   const me = requireIdentity();
-  sessionKeys = deriveSessionKeys(me.secretKey, me.publicKey, theirPublicKey);
-  peerDeviceId = payload.deviceId;
-  storedPeerPublic = payload.pk;
+  const canonicalPublic = toBase64Url(theirPublicKey);
+  if (canonicalPublic !== payload.pk || canonicalPublic === myAddress()) {
+    return { ok: false, error: "enter the other device's public key" };
+  }
+  let derived: SessionKeys;
+  try { derived = deriveSessionKeys(me.secretKey, me.publicKey, theirPublicKey); }
+  catch { return { ok: false, error: "public key cannot establish a shared key" }; }
 
   // Stored only after the derivation succeeds, so a rejected payload cannot
   // leave a half-written pairing behind.
-  await SecureStore.setItemAsync(PEER_PUBLIC, payload.pk);
   await SecureStore.setItemAsync(PEER_DEVICE_ID, payload.deviceId);
+  await SecureStore.setItemAsync(PEER_PUBLIC, canonicalPublic);
+  sessionKeys = derived;
+  peerDeviceId = payload.deviceId;
+  storedPeerPublic = canonicalPublic;
 
   return { ok: true, fingerprint: fingerprintOf(sessionKeys) };
 }
@@ -224,6 +247,10 @@ export function sendKey(): Uint8Array | null {
   return sessionKeys?.sendKey ?? null;
 }
 
+export function receiveKey(): Uint8Array | null {
+  return sessionKeys?.receiveKey ?? null;
+}
+
 /**
  * FR-4's unpair. Revokes this side of the pairing permanently.
  *
@@ -233,9 +260,9 @@ export function sendKey(): Uint8Array | null {
  * exists, so the narrower action is the safer default.
  */
 export async function unpair(): Promise<void> {
+  await SecureStore.deleteItemAsync(PEER_PUBLIC);
   sessionKeys = null;
   peerDeviceId = null;
   storedPeerPublic = null;
-  await SecureStore.deleteItemAsync(PEER_PUBLIC);
   await SecureStore.deleteItemAsync(PEER_DEVICE_ID);
 }

@@ -28,6 +28,7 @@ type NotificationListenerEvents = {
 };
 
 declare class NotificationListenerNativeModule extends NativeModule<NotificationListenerEvents> {
+  displayNotification(tag: string, title: string, body: string, group: string): boolean;
   /** Whether the user has granted this app notification access in system settings. */
   isEnabled(): boolean;
   /** Opens the system Notification access screen (FR-5). */
@@ -45,6 +46,8 @@ const Native = requireNativeModule<NotificationListenerNativeModule>(
 );
 
 export default {
+  displayNotification: (tag: string, title: string, body: string, group: string): boolean =>
+    Native.displayNotification(tag, title, body, group),
   isEnabled: (): boolean => Native.isEnabled(),
   openSettings: (): void => Native.openSettings(),
   requestRebind: (): void => Native.requestRebind(),

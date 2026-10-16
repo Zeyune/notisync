@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 NotifSync is an end-to-end encrypted notification relay between a user's own devices: an Android phone forwards selected notifications to a paired phone over a relay that only ever sees ciphertext. [notification-sync-prd.md](notification-sync-prd.md) is the spec and the source of truth for every requirement (FR-*) and open question (Q*) referenced below.
 
-**Current milestone: M1 — the LAN loop.** Two devices, a direct connection over the local network, a notification captured on the Android sender appearing on device B. No encryption, no filtering, no relay. PRD §10 timeboxes it deliberately: it exists to validate the data shape and is **thrown away at M3**, so do not make it good.
+**Current milestone: M3.4 — reliability measurement. M3.3 is verified complete (2026-10-11).** Real Samsung capture displayed and acknowledged on Xiaomi with Samsung Wi-Fi / Xiaomi cellular, including background, locked and ordinary process termination. Force-stop reopen recovery and encrypted sender offline retry were observed separately. See [the M3 plan](notification-sync-m3-plan.md) and [QA checklist](notification-sync-m3-qa.md) for evidence and remaining checks. LAN remains selectable; native sender capture without JS is still unimplemented. Receiver force-stop requires reopening.
 
 **M0 is complete** (2026-08-12). The Kotlin `NotificationListenerService` captures on a real Samsung A52 and hands notifications to JS, verified against live WhatsApp and Gmail traffic rather than synthetic ones.
 
@@ -23,7 +23,7 @@ npx expo-modules-autolinking resolve -p android   # verify the native module is 
 adb logcat -s NotifSyncListener               # native listener logs
 ```
 
-There is no test runner yet. `npx expo start` alone is not useful — Expo Go cannot load the custom native module.
+`npm test` runs delivery tests; `npm run test:pairing` verifies key derivation; `npm run test:relay` exercises relay/FCM with synthetic credentials. `npm run typecheck` and `npm run typecheck:relay` check both targets. Node 24 is used for the SQLite-backed tests. Expo Go cannot load the custom native module.
 
 **`android/` and `ios/` are generated and gitignored.** This is a prebuild (CNG) project: native directories are rebuilt from `app.json` and `modules/`, never hand-edited. An edit made directly in `android/` disappears at the next prebuild.
 
@@ -56,7 +56,7 @@ The service is declared in the **module's own manifest**, not via a config plugi
 
 **Still open, and what each actually blocks:**
 
-- **Q2 — crypto library.** Blocks **M2**, not M1. Needs AEAD that is maintained, needs no native fork, and is callable from a Swift Notification Service Extension (FR-35) as well as from JS. That last constraint is the narrow one, and it is the easiest to forget until it invalidates a choice already built on.
+- **Q2 — crypto library is answered.** Android uses `expo-crypto` AES-GCM; X25519/HKDF pairing uses noble. Native CryptoKit interoperability remains untested while iOS is deferred. Paired directional keys are mandatory; no public development-key fallback remains.
 - **Q9 — product name.** A Play listing called "Notify Sync: Secure E2E Mirror" already collides in store search. The GitHub repo was created as `Zeyune/notisync` on 2026-09-12 — *without the `f`* — which sits closer to that collision, not further from it. Candidate recorded in the PRD: `noti-noti`. Cheap to change now, expensive once anything links to it.
 - Q4 (APNs under sustained load) is an M3 measurement; Q5 and Q6 are M4/M6 product calls. None gate current work.
 
@@ -68,7 +68,7 @@ Do **not** reinstate a gate here without a matching PRD change.
 
 **The server must stay unable to decrypt.** Payloads are encrypted on the sender; the relay sees ciphertext, a target token, and a size. This forecloses key escrow, key recovery (FR-27), server-side filtering, and server-side history. If a proposed feature would need the server to read notification text, it is out of scope by construction, not a trade-off to weigh.
 
-**Metadata is not protected, and the docs must say so.** The relay can observe device labels, push tokens, payload sizes, and timing/volume. §7 states this deliberately; don't let any copy claim a stronger property.
+**Metadata is not protected, and the docs must say so.** The relay can observe public device identities, push tokens, payload sizes, and timing/volume. Notification device labels travel inside ciphertext. Don't let any copy claim metadata confidentiality.
 
 **No third-party analytics or crash-reporting SDKs** (FR-30). No Firebase Analytics, no Sentry. This is a product-defining rule, not a preference — and it is why the diagnostics screen (FR-33) has to be good. Note that `@react-native-firebase/messaging` for FCM/APNs tokens is a separate thing and is in scope.
 

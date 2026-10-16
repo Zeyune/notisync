@@ -16,8 +16,8 @@ export type { SessionKeys } from "./pairingKeys";
  * The derivation itself lives in `pairingKeys.ts` so it can be tested under
  * Node. This file holds what cannot: randomness and the QR payload.
  *
- * Nothing here writes to Android Keystore or the iOS Keychain yet — FR-3 storage
- * is still to come, and until it lands, derived keys live only in memory.
+ * pairingState.ts persists the identity and peer in SecureStore, then derives
+ * the directional session keys in memory on each cold start.
  */
 
 const SECRET_KEY_BYTES = 32;

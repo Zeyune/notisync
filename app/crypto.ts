@@ -1,37 +1,21 @@
 import {
   AESEncryptionKey,
+  AESSealedData,
+  aesDecryptAsync,
   aesEncryptAsync,
 } from "expo-crypto";
 
-import { sendKey } from "./pairingState";
+import { initPairing, sendKey, receiveKey } from "./pairingState";
+import { decodeCiphertext, validCiphertext, validateNotification } from "./deliveryProtocol";
+import type { ForwardedNotification } from "./deliveryProtocol";
 
 /**
- * M2 slice 1 — AEAD, without pairing yet.
+ * Paired AES-256-GCM encryption and authenticated receiver decryption.
  *
  * PRD §12 Q2 settles the stack: AES-256-GCM through `expo-crypto` on this side,
  * CryptoKit's `AES.GCM` in the iOS Notification Service Extension (FR-35), and
- * X25519 + HKDF at pairing time. This file is only the AEAD half. FR-1 and FR-2
- * — the QR exchange that produces a real shared key — come next, and until they
- * exist both ends use the fixed development key below.
+ * X25519 + HKDF at pairing time. Unpaired sends are refused.
  */
-
-/**
- * ⚠ DEVELOPMENT KEY — PUBLIC, WORTHLESS, NEVER TO BE USED FOR ANYTHING REAL. ⚠
- *
- * This value is committed to a public GitHub repository, so anyone can read it
- * and decrypt anything it protects. It exists so the sender and the throwaway
- * laptop receiver can agree on a key before pairing is built, and for no other
- * purpose.
- *
- * It must be deleted — not rotated, not moved to a config file — when FR-2's key
- * exchange lands. A real key is generated per pairing, lives in Android Keystore
- * or the iOS Keychain (FR-3), and never appears in source, in a build artifact,
- * or on the relay. There is no key recovery by design (FR-27).
- *
- * The loudness of this comment is proportional to how ordinary a hardcoded key
- * looks six months later, in a file nobody is reading closely.
- */
-const DEVELOPMENT_KEY_BASE64 = "PgZO+T2I2lS82EC/U2REy7DqjlD5LWgJtTtd5/dRmRw=";
 
 /**
  * The envelope that actually crosses the network.
@@ -58,30 +42,21 @@ let cachedKey: AESEncryptionKey | null = null;
 let cachedKeyFor: string | null = null;
 
 function keyIdentity(bytes: Uint8Array | null): string {
-  if (!bytes) return "development";
+  if (!bytes) throw new Error("pair a receiver before forwarding");
   // Only an identity for the cache, never logged or transmitted.
-  return Array.from(bytes.slice(0, 8), (b) => b.toString(16)).join("");
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/**
- * The key to seal with: the paired send key if there is one, else the fixed
- * development key.
- *
- * The fallback is what makes this runnable before pairing exists, and it is also
- * the dangerous part — an unpaired device encrypts with a key published on
- * GitHub while the UI says "encrypted". `App.tsx` states which key is in use for
- * exactly that reason. When FR-2 pairing is mandatory, this fallback is deleted
- * rather than kept as a convenience.
- */
+/** Imports only the paired send key; the cache never leaves this process. */
 async function activeKey(): Promise<AESEncryptionKey> {
+  await initPairing();
   const derived = sendKey();
   const identity = keyIdentity(derived);
 
   // Importing is not free, and the key changes only when pairing does.
   if (!cachedKey || cachedKeyFor !== identity) {
-    cachedKey = derived
-      ? await AESEncryptionKey.import(derived)
-      : await AESEncryptionKey.import(DEVELOPMENT_KEY_BASE64, "base64");
+    if (!derived) throw new Error("pair a receiver before forwarding");
+    cachedKey = await AESEncryptionKey.import(derived);
     cachedKeyFor = identity;
   }
   return cachedKey;
@@ -95,7 +70,7 @@ async function activeKey(): Promise<AESEncryptionKey> {
  * and a nonce this code chose would be a nonce this code could get wrong. §8's
  * separate-key-per-direction rule exists for the same reason at a larger scale —
  * two devices encrypting under one key could collide on a nonce — and that rule
- * is not yet implemented, because it needs the pairing this file predates.
+ * is implemented by pairingKeys.ts.
  */
 export async function seal(value: unknown): Promise<Envelope> {
   const key = await activeKey();
@@ -108,4 +83,19 @@ export async function seal(value: unknown): Promise<Envelope> {
   const payload = (await sealed.combined("base64")) as string;
 
   return { v: 1, payload };
+}
+
+/** AES-GCM verifies the tag before returning plaintext. No unpaired fallback. */
+export async function open(ciphertext: string): Promise<ForwardedNotification> {
+  await initPairing();
+  const derived = receiveKey();
+  if (!derived || !validCiphertext(ciphertext)) throw new Error("cannot decrypt notification");
+  try {
+    const key = await AESEncryptionKey.import(derived);
+    // The installed Android implementation takes ByteArray even though the
+    // public TS signature also advertises strings. Decode before the bridge.
+    const sealed = AESSealedData.fromCombined(decodeCiphertext(ciphertext), { ivLength: 12, tagLength: 16 });
+    const bytes = await aesDecryptAsync(sealed, key);
+    return validateNotification(JSON.parse(new TextDecoder().decode(bytes)));
+  } catch { throw new Error("notification authentication or format failed"); }
 }

@@ -2,10 +2,15 @@ package expo.modules.notificationlistener
 
 import android.content.ComponentName
 import android.content.Intent
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.os.Build
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.NotificationCompat
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -25,6 +30,38 @@ class NotificationListenerModule : Module() {
     Name("NotificationListener")
 
     Events("onNotificationPosted")
+
+    // Native notify is synchronous and does not pass decrypted content through
+    // expo-notifications' debug logging of NotificationService bundles.
+    Function("displayNotification") { tag: String, title: String, body: String, group: String ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      val manager = context.getSystemService(NotificationManager::class.java)
+      val channelId = "notifsync-received"
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        manager.createNotificationChannel(NotificationChannel(channelId, "Synced notifications", NotificationManager.IMPORTANCE_HIGH))
+        if (manager.getNotificationChannel(channelId)?.importance == NotificationManager.IMPORTANCE_NONE) {
+          return@Function false
+        }
+      }
+      if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return@Function false
+      val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
+      val notification = NotificationCompat.Builder(context, channelId)
+        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .setContentTitle(title)
+        .setContentText(body)
+        .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+        .setGroup(group)
+        .setAutoCancel(true)
+        .setOnlyAlertOnce(true)
+        .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+      if (launch != null) {
+        notification.setContentIntent(PendingIntent.getActivity(context, 0, launch,
+          PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+      }
+      // Stable tag: a retry after a crash replaces the same shade entry.
+      manager.notify(tag, 1, notification.build())
+      true
+    }
 
     /**
      * Whether the user granted notification access.

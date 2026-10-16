@@ -1,3 +1,109 @@
+## 2026-10-11
+
+### M3.3 verified complete: real Samsung capture displays and acknowledges on Xiaomi across networks
+**Type:** Verified
+**Time:** 17:55 +08:00
+**Files:** `notification-sync-m3-plan.md`, `notification-sync-m3-qa.md`, `CLAUDE.md`
+**Related:** FR-16, FR-17, FR-19, FR-25, FR-26, FR-31, FR-32, FR-33, §10 M3.3/M3.4
+**Why:** Completion now has receiving-device evidence: controlled Android capture, authenticated native decryption/display, fixed receiver logs, user-confirmed shade entries and relay deletion after ack. Server-side acceptance alone was not used as proof.
+
+Samsung has no usable mobile data, so the user approved the equivalent network split: Samsung on validated Wi-Fi and Xiaomi on validated cellular. Samsung stayed foregrounded; no laptop LAN receiver or Metro transport was used. Observed receiver results, all in +08:00:
+
+| Case | Receiver evidence | Result |
+|---|---|---|
+| Same-Wi-Fi test and actual capture | `push displayed` at 17:24:27 and 17:25:40; user observed synthetic notifications; D1 pending 0 | Pass |
+| Background, same Wi-Fi | NotifSync outside foreground before/after send; `push displayed` 17:30:43; user observed before reopening; pending 0 | Pass |
+| Background, separate networks | Wi-Fi/cellular verified; `push displayed` 17:32:23; user observed on Xiaomi mobile data; pending 0 | Pass |
+| Locked, separate networks | Xiaomi Asleep before/after send; `push displayed` 17:34:01; user confirmed retained notification after unlocking; pending 0 | Pass |
+| Ordinary termination, separate networks | `am kill` made process absent with `stopped=false`; push started PID 14073, remained backgrounded, displayed 17:35:56; user observed without reopening; pending 0 | Pass |
+| Force-stop, separately | Process absent and `stopped=true`; no new receiver execution; one 332-character base64 ciphertext retained, synthetic text matches 0. Reopen produced `catch-up displayed` 17:42:05 and user-confirmed notification | Pass for reopen recovery; delivery while stopped was not expected |
+| Offline sender retry | Controlled Wi-Fi outage produced `Queued: 1` and visible encrypted-retry failure. Wi-Fi restoration plus sender resume drained it to 0; receiver `push displayed` 17:53:02; exact final title/body user-confirmed | Pass; receiver was foregrounded for this final retry |
+
+**QA label correction:** the earlier PowerShell commands with separate quoted shell arguments shortened actual capture titles to `M3` and bodies to their case suffix, including `force-stop-01`. Those notifications did arrive, but earlier entries' claims of full multiword capture title/body are superseded by this correction. The repeatable command now passes one quoted Android command to `adb shell`. The final correctly quoted `M3 QA final-locked-03` / `Synthetic final locked retry check 03` was confirmed exactly by the user. Its name identifies the test; it was received while foregrounded, and is not a second locked-state result. A test tap overlapped with Wi-Fi Settings during reconnection; that attempt did not forward a notification. Subsequent QA taps require the NotifSync package and forwarding card, and forwarding was left off on both phones.
+
+A large synthetic notification was observed at 17:37:25 with `push displayed` and ack, but its actual wire size and inline-versus-fetch route were not captured. The UI exposed 1024 characters of its body. **Do not count this as real-device fetch-only proof.** The automated fetch-only/authentication tests pass. A natural `push duplicate` was observed at 17:45:57 after force-stop recovery; the receipt branch acknowledged it without another native display call.
+
+Final Xiaomi UI and user observation agree: queued 0, pending ack 0, sequence gaps 0; receiver diagnostic `push displayed at 2026-10-11T09:53:02.021Z`. D1 pending count is 0, both token lengths remain 142 with refreshed registration times, and public identities are retained. No raw token, registration secret, notification plaintext or secret key was logged by the implementation. Historical diagnostic text may retain an earlier catch-up failure on Samsung; it is not a current connectivity result.
+
+Automated results remain: 11 delivery tests, 7 pairing checks, 3 Worker/FCM tests, app/relay typechecks, Expo prebuild/autolinking, native release build and 19 production relay smoke checks passed. The last code-changing APK build succeeded in 54s and is installed on both phones. No production secret was changed, and no commit or push was made.
+
+**Remaining:** M3.4 calibrated latency/burst/soak measurement, real-device fetch-only route confirmation, blocked permission/channel recovery, natural FCM token rotation, ack-network failure and LAN regression with a matching development peer remain unmeasured. Sender capture without JS and autonomous token-upload/retry workers remain unimplemented; receipt compaction and production cron observation are outstanding. The dependency install reported 30 vulnerabilities, with no broad audit fix attempted.
+
+**Exact next manual test:** on Samsung Wi-Fi / Xiaomi cellular, leave Samsung foregrounded and Xiaomi locked; enable forwarding, post 20 uniquely numbered, correctly quoted synthetic notifications, then disable forwarding. Confirm all 20 native entries, pending ack 0, gaps 0 and D1 pending 0; record timestamps and duplicates before treating M3.4 burst reliability as verified. Use the copyable loop in `notification-sync-m3-qa.md`.
+
+### Samsung capture reaches Xiaomi over the deployed relay on the same Wi-Fi
+**Type:** Verified
+**Time:** 17:29 +08:00
+**Files:** `notification-sync-m3-plan.md`, `notification-sync-m3-qa.md`
+**Related:** FR-16, FR-19, FR-26, FR-32, §10 M3.3
+**Why:** M3 delivery must be supported by native receiver observations and acknowledgements, beyond a relay or FCM success response.
+
+The native-input correction built successfully with `:app:assembleRelease -PreactNativeArchitectures=arm64-v8a --console=plain` in 54s. Both phones accepted the updated APK via `adb install -r`; identity and reciprocal pairing remained intact. Xiaomi recovered the previously rejected encrypted payload on reopening: `catch-up displayed` at 17:23:28, followed by D1 pending count 0. The user observed the synthetic native Test payload notification. A fresh Samsung test-button send then produced Xiaomi `push displayed` at 17:24:27, with two native synced notification records.
+
+The actual capture path was exercised at 17:25:39 using `adb -s RZCR306W59F shell cmd notification post -t 'M3 QA same-wifi-01' notifsync-qa-same-wifi-01 'Synthetic delivery check 01'`. Samsung forwarding was enabled and its captured row reported relay acceptance. Xiaomi logged `push displayed` at 17:25:40; the user confirmed the matching synthetic title/body in the notification shade. D1 pending count returned to 0. Both default network transports were validated Wi-Fi. No laptop LAN receiver or Metro server carried the payload.
+
+**Remaining blocker:** the user reports Samsung has no usable mobile data. A second internet connection for either phone is required to verify the primary different-network goal. Same-Wi-Fi receipt does not complete M3.3. Background, locked and ordinary-termination delivery, force-stop catch-up, large-payload delivery and natural token rotation remain pending at this point.
+
+**Exact next manual test:** press Home on Xiaomi while keeping Samsung in NotifSync, send `M3 QA background-01`, and observe the notification before reopening Xiaomi. Repeat locked, then repeat actual capture on two independent connections.
+
+### Real FCM reception exposed an Android sealed-data input mismatch
+**Type:** Fixed
+**Time:** 17:22 +08:00
+**Files:** `app/crypto.ts`, `app/deliveryProtocol.ts`, `app/delivery.test.mts`, `notification-sync-m3-plan.md`, `notification-sync-m3-qa.md`
+**Related:** FR-16, FR-19, FR-32, §10 M3.3
+**Why:** The first controlled Samsung-to-Xiaomi send reached the receiver but was rejected before display. A successful build and pure Node crypto tests had not exercised the installed Android bridge.
+
+Both phones' on-screen directional fingerprints were read and matched crosswise after reciprocal pairing. A misplaced adb tap during QA briefly unpaired Samsung; its existing public-key input restored the pairing with the same fingerprints, and subsequent button taps locate fresh UI bounds. No payload was sent by that misplaced tap.
+
+At 17:19:36, Samsung's confirmed Send test payload button produced relay acceptance. Xiaomi logs at 17:19:37 recorded both `catch-up rejected` and `push rejected`; D1 retained one ciphertext of length 416. This proves FCM reached the handler, **not** notification delivery. No acknowledgement was sent for the rejected payload.
+
+The installed Expo Crypto 57.0.3 TypeScript signature advertises base64 strings for `fromCombined`, but its Android function takes only `ByteArray` and the Expo converter requires a Uint8Array. The receiver now explicitly decodes the ciphertext before that call; no dependency fork, key change or plaintext logging was introduced. The Node decrypt fixture uses the same decoding adapter, with a regression check for intact IV/ciphertext/tag. `npm.cmd test` passed all 11 tests and `npm.cmd run typecheck` passed. An updated APK is being built for the retained-ciphertext retest.
+
+**Not verified:** the adapter fix has not yet passed on Xiaomi. M3.3 remains open; no separate-network, background or locked display is claimed.
+
+### Verify the M3 build and both real device registrations; delivery QA is still pending
+**Type:** Verified
+**Time:** 17:12 +08:00
+**Files:** `notification-sync-m3-plan.md`, `notification-sync-m3-qa.md`, `CLAUDE.md`
+**Related:** FR-16, FR-19, FR-25, FR-26, FR-31, FR-33, §10 M3
+**Why:** The previous milestone notes described server-side FCM acceptance with no Android receiver. Code, builds and device observations must establish the current state before claiming M3.3 completion.
+
+Read the changelog, M3 plan, PRD and relevant Android, relay, Firebase, encryption and pairing code before implementation. The verified audit and incremental change plan are recorded in the M3 plan. The QA checklist distinguishes same-Wi-Fi, separate networks, receiver backgrounded, locked, ordinary termination and force-stop; it also covers blocked permissions/channel, retries, duplicates, large payloads and token lifecycle.
+
+Passed from `app/`: `npm.cmd run typecheck`, `npm.cmd run typecheck:relay`, `npm.cmd test` (10 delivery tests), `npm.cmd run test:pairing` (7 checks), and `npm.cmd run test:relay` (3 Worker/FCM tests). Tests exercise authenticated decrypt/display/ack ordering, duplicate handling, blocked display, tampering, fetched-sender checks, actual SQLite counters/gap queries, relay authorization/TTL and mocked FCM error handling. Native crypto and headless execution still require device evidence; Node tests alone do not prove them. `node --check tools/m1-receiver.mjs`, Expo prebuild and Android autolinking passed. `:app:assembleRelease --console=plain` succeeded in 9m17s; the final `:app:assembleRelease -PreactNativeArchitectures=arm64-v8a --console=plain` succeeded in 50s and includes push-versus-catch-up diagnostics. The release variant uses the existing development signing configuration for QA. PowerShell blocks `npm.ps1`; use `npm.cmd`. Dependency installation reported 30 vulnerabilities (7 moderate, 22 high, 1 critical); no broad audit fix was attempted.
+
+Both Samsung `RZCR306W59F` and Xiaomi `75697t8pobuslrpn` now list as authorized adb devices. Both accepted the final APK with `adb install -r`, preserving app data. Both show registered, notification permission allowed and receiver ready. Production D1 corroborates public-key prefixes `F2UCRJq0` and `Ilo0wa45`, token lengths 142 and fresh registration times; neither tokens nor registration secrets were queried. Both default network transports were verified as validated Wi-Fi. Xiaomi identity persisted across a prior force-stop followed by reopening; no send occurred during that check. Samsung's retained identity also survived the update. Samsung was paired to Xiaomi's present public key; Xiaomi's manual pairing is pending.
+
+**Not verified:** no Samsung-to-Xiaomi notification has been observed yet. Background/locked/headless delivery, natural token rotation, the production cron firing, large-payload delivery and sustained reliability remain unproven. M3.3 remains open.
+
+**Exact next manual test:** enter Samsung's on-screen public key on Xiaomi and tap Pair; compare the directional fingerprints crosswise. With both phones on Wi-Fi, send Samsung's synthetic test payload and observe the native Xiaomi notification plus its receiver diagnostic and acknowledgement. Then test actual Samsung capture over mobile data with Xiaomi backgrounded and locked.
+
+### Harden and deploy the encrypted relay catch-up and FCM failure paths
+**Type:** Changed
+**Time:** 17:11 +08:00
+**Files:** `relay/src/index.ts`, `relay/src/fcm.ts`, `relay/relay.test.mjs`, `relay/tsconfig.json`, `tools/verify-relay.mjs`
+**Related:** FR-16, FR-17, FR-25, FR-30, FR-32, FR-33, §10 M3
+**Why:** A stored ciphertext must be recoverable after a missed push, and FCM failure diagnostics must neither leak tokens nor invalidate a working token because a message was malformed.
+
+Added authenticated, recipient-scoped `GET /pending`, bounded to 50 unexpired blobs. Registration/send inputs have type and size checks; ciphertext stays opaque to the relay. OAuth and FCM calls have bounded timeouts. FCM remains data-only, high-priority, with ciphertext inline or an opaque fetch handle and a 24-hour TTL. Errors return fixed categories, without raw Google responses. Only an explicit FCM `UNREGISTERED` detail clears the matching stale token; a concurrent refresh is preserved. This supersedes the September note that any `INVALID_ARGUMENT` should clear a token.
+
+Wrangler deployment dry-run passed. Deployed Worker version `491a39d0-cd81-43d5-8093-e1f10866be10` at the existing relay URL, retaining D1 and the hourly trigger without changing production secrets or schema. The production `relay/smoke-test.mjs` passed all 19 checks using synthetic device records and random ciphertext. The smoke test creates synthetic rows; it does not expose real device tokens or secrets. Automated Worker/FCM tests passed (3 tests).
+
+**Not verified:** deployment and FCM acceptance do not prove receiving-device delivery. The hourly production sweep has not been observed firing.
+
+### Connect paired Android sending, encrypted retries and an authenticated FCM receiver
+**Type:** Added
+**Time:** 17:10 +08:00
+**Files:** `app/App.tsx`, `app/index.ts`, `app/forwarding.ts`, `app/receiver.ts`, `app/deliveryProtocol.ts`, `app/deliverySql.ts`, `app/deliveryStore.ts`, `app/crypto.ts`, `app/pairingState.ts`, `app/push.ts`, `app/relayClient.ts`, `app/modules/notification-listener/`, `app/app.json`, `app/package.json`, `app/package-lock.json`, `app/delivery.test.mts`, `app/pairing.ts`, `app/pairingPeer.mts`, `app/lanForwarding.ts`, `tools/m1-receiver.mjs`, `.gitignore`
+**Related:** FR-3, FR-16, FR-17, FR-19, FR-26, FR-27, FR-30, FR-31, FR-32, FR-33, §10 M3
+**Why:** The existing capture path only sent to LAN and the app had no data-push decrypt/display/ack handler. Preserve the functioning pairing/native capture/LAN modules while implementing the missing relay path.
+
+Actual captured notifications and synthetic tests now use the deployed relay by default; LAN stays selectable. Persistent per-pair counters and an encrypted SQLite outbox preserve IDs/sequence across retries and restarts. Pairing initialization is single-flight, identities are retained, and encryption refuses unpaired sends. Removed the public development-key fallback. Relay registration secrets are scoped to relay origin and public identity; the previous default-relay secret migrates locally. Launch/resume and native token events synchronize FCM registration without showing or logging tokens.
+
+The module-scope TaskManager receiver loads pairing, authenticates AES-GCM with the directional receive key, validates the decrypted format, checks notification permission/channel, posts through the existing native Android module, persists a duplicate receipt, and queues/attempts acknowledgement. Stable native tags suppress duplicate shade entries. Resume/foreground catch-up recovers retained ciphertext and retries acks. Native display avoids Expo debug logging of local plaintext, uses a high-importance channel and private lock-screen visibility, and capture ignores this app to prevent echo loops. Removed Android notification-key logs, public pairing-code logging and laptop receiver plaintext output. Neither relay nor FCM receives notification text or secret keys.
+
+**Remaining limits:** sender capture with no JS runtime is still dropped; keep Samsung foregrounded for M3 QA. Outbox retry, failed-ack retry and native token reconciliation resume when JS runs; autonomous native sender/token workers and OEM hardening remain later work. Receipt metadata currently has no compaction. A crash between native display and receipt persistence may repost the stable tag; exactly-once audible alerts are not guaranteed. Real-device native decrypt/display/headless behavior remains to be measured.
+
 ## 2026-09-13
 
 ### Relay sends FCM pushes; accepted by Google but not yet received by any device

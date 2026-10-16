@@ -1,6 +1,7 @@
 import * as SecureStore from "expo-secure-store";
+import { sha256 } from "@noble/hashes/sha2.js";
 
-import { myAddress } from "./pairingState";
+import { initPairing, myAddress } from "./pairingState";
 
 /**
  * Talks to the NotifSync relay (PRD §8, §10 M3).
@@ -32,8 +33,14 @@ const DEVICE_SECRET = "notifsync.v1.relay.secret";
  */
 const DEFAULT_RELAY_URL = "https://notifsync-relay.johnkenneth-tan-dev.workers.dev";
 
-let cachedSecret: string | null = null;
 let cachedUrl: string | null = null;
+const registrations = new Map<string, Promise<RelayResult<true>>>();
+
+async function secretKey(base: string): Promise<string> {
+  await initPairing();
+  const digest = sha256(new TextEncoder().encode(`${base}:${myAddress()}`));
+  return `${DEVICE_SECRET}.${Array.from(digest, b => b.toString(16).padStart(2, "0")).join("")}`;
+}
 
 export async function relayUrl(): Promise<string> {
   if (!cachedUrl) {
@@ -43,31 +50,45 @@ export async function relayUrl(): Promise<string> {
 }
 
 export async function setRelayUrl(url: string): Promise<void> {
-  cachedUrl = url.trim().replace(/\/+$/, "");
-  await SecureStore.setItemAsync(RELAY_URL, cachedUrl);
+  const parsed = new URL(url.trim());
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && ["localhost", "127.0.0.1"].includes(parsed.hostname))) {
+    throw new Error("relay must use HTTPS");
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== "/") {
+    throw new Error("enter only the relay's HTTPS origin");
+  }
+  await SecureStore.setItemAsync(RELAY_URL, parsed.origin);
+  cachedUrl = parsed.origin;
 }
 
-export async function deviceSecret(): Promise<string | null> {
-  if (!cachedSecret) cachedSecret = await SecureStore.getItemAsync(DEVICE_SECRET);
-  return cachedSecret;
+export async function deviceSecret(base?: string): Promise<string | null> {
+  const url = base ?? await relayUrl();
+  const key = await secretKey(url);
+  let secret = await SecureStore.getItemAsync(key);
+  // Preserve the existing Samsung registration. Never send this legacy secret
+  // to a different relay; new registrations are scoped to origin + identity.
+  if (!secret && url === DEFAULT_RELAY_URL) {
+    secret = await SecureStore.getItemAsync(DEVICE_SECRET);
+    if (secret) await SecureStore.setItemAsync(key, secret);
+  }
+  return secret;
 }
 
-export function isRegistered(): boolean {
-  return cachedSecret !== null;
-}
-
-type RelayResult<T> = { ok: true; value: T } | { ok: false; error: string };
+export type RelayResult<T> = { ok: true; value: T } | { ok: false; error: string; status?: number };
+export type SendResponse = { id: string; pushed: boolean; inline?: boolean; reason?: string };
+export type BlobResponse = { id: string; sender: string; ciphertext: string };
 
 async function call<T>(
   path: string,
-  init: { method?: string; body?: unknown; authenticated?: boolean } = {},
+  init: { method?: string; body?: unknown; authenticated?: boolean; base?: string } = {},
 ): Promise<RelayResult<T>> {
-  const base = await relayUrl();
+  await initPairing();
+  const base = init.base ?? await relayUrl();
   const headers: Record<string, string> = {};
   if (init.body) headers["content-type"] = "application/json";
 
   if (init.authenticated !== false) {
-    const secret = await deviceSecret();
+    const secret = await deviceSecret(base);
     if (!secret) return { ok: false, error: "device is not registered with the relay" };
     headers["authorization"] = `Bearer ${secret}`;
     headers["x-device-key"] = myAddress();
@@ -97,15 +118,15 @@ async function call<T>(
     }
 
     if (!response.ok) {
-      const message = (parsed as { error?: string })?.error ?? `HTTP ${response.status}`;
-      return { ok: false, error: message };
+      // An older relay can echo FCM token values in error bodies. Never expose
+      // server-provided text to UI/logs, including parse and transport failures.
+      return { ok: false, error: `relay HTTP ${response.status}`, status: response.status };
     }
     return { ok: true, value: parsed as T };
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
     return {
       ok: false,
-      error: controller.signal.aborted ? "relay timed out after 10s" : message,
+      error: controller.signal.aborted ? "relay timed out after 10s" : "relay connection failed",
     };
   } finally {
     clearTimeout(timer);
@@ -121,12 +142,24 @@ async function call<T>(
  * runs on every launch rather than once at setup.
  */
 export async function registerWithRelay(fcmToken: string | null): Promise<RelayResult<true>> {
-  const existing = await deviceSecret();
+  await initPairing();
+  const base = await relayUrl();
+  const key = await secretKey(base);
+  const previous = registrations.get(key);
+  const registration = (previous ?? Promise.resolve()).then(() => performRegistration(fcmToken, base, key));
+  registrations.set(key, registration);
+  try { return await registration; }
+  finally { if (registrations.get(key) === registration) registrations.delete(key); }
+}
+
+async function performRegistration(fcmToken: string | null, base: string, key: string): Promise<RelayResult<true>> {
+  const existing = await deviceSecret(base);
 
   const result = await call<{ secret?: string }>("/register", {
     method: "POST",
     body: { publicKey: myAddress(), fcmToken },
     authenticated: existing !== null,
+    base,
   });
 
   if (!result.ok) return result;
@@ -135,8 +168,7 @@ export async function registerWithRelay(fcmToken: string | null): Promise<RelayR
     // Returned exactly once, when the address is first claimed. Stored in
     // Keystore/Keychain beside the identity (FR-3); it cannot be recovered from
     // the relay afterwards.
-    cachedSecret = result.value.secret;
-    await SecureStore.setItemAsync(DEVICE_SECRET, result.value.secret);
+    await SecureStore.setItemAsync(key, result.value.secret);
   }
   return { ok: true, value: true };
 }
@@ -145,17 +177,19 @@ export async function registerWithRelay(fcmToken: string | null): Promise<RelayR
 export async function sendViaRelay(
   target: string,
   ciphertext: string,
-): Promise<RelayResult<{ id: string }>> {
-  return call<{ id: string }>("/send", {
+  base?: string,
+): Promise<RelayResult<SendResponse>> {
+  return call<SendResponse>("/send", {
     method: "POST",
     body: { target, ciphertext },
+    base,
   });
 }
 
 /** FR-17's fetch path: collect ciphertext that was too large to ride the push. */
 export async function fetchBlob(
   id: string,
-): Promise<RelayResult<{ id: string; sender: string; ciphertext: string }>> {
+): Promise<RelayResult<BlobResponse>> {
   return call(`/blob/${id}`);
 }
 
@@ -167,6 +201,10 @@ export async function fetchBlob(
  * lose the notification with no trace, which is precisely the silent failure
  * FR-26 and FR-33 exist to make impossible.
  */
-export async function ackBlob(id: string): Promise<RelayResult<{ deleted: number }>> {
-  return call<{ deleted: number }>("/ack", { method: "POST", body: { id } });
+export async function ackBlob(id: string, base?: string): Promise<RelayResult<{ deleted: number }>> {
+  return call<{ deleted: number }>("/ack", { method: "POST", body: { id }, base });
+}
+
+export async function pendingBlobs(): Promise<RelayResult<{ blobs: BlobResponse[] }>> {
+  return call("/pending");
 }
