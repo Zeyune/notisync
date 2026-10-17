@@ -2,11 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Dynamic project status
+
+For every status, progress, remaining-work, next-step or continuation request, follow [AGENTS.md's dynamic status procedure](AGENTS.md#dynamic-project-status), including its checkpoint-maintenance rules. Reconcile [the last documented checkpoint](PROJECT_STATUS.md) and the dated summaries below with current repository evidence before choosing work. Do not maintain a separate Claude status report.
+
 ## What this is
 
 NotifSync is an end-to-end encrypted notification relay between a user's own devices: an Android phone forwards selected notifications to a paired phone over a relay that only ever sees ciphertext. [notification-sync-prd.md](notification-sync-prd.md) is the spec and the source of truth for every requirement (FR-*) and open question (Q*) referenced below.
 
-**Current milestone: M3.4 — reliability measurement. M3.3 is verified complete (2026-10-11).** Real Samsung capture displayed and acknowledged on Xiaomi with Samsung Wi-Fi / Xiaomi cellular, including background, locked and ordinary process termination. Force-stop reopen recovery and encrypted sender offline retry were observed separately. See [the M3 plan](notification-sync-m3-plan.md) and [QA checklist](notification-sync-m3-qa.md) for evidence and remaining checks. LAN remains selectable; native sender capture without JS is still unimplemented. Receiver force-stop requires reopening.
+**Milestone recorded at the 2026-10-17 checkpoint: M3.4 — reliability measurement. M3.3 is verified complete (2026-10-11).** Real Samsung capture displayed and acknowledged on Xiaomi with Samsung Wi-Fi / Xiaomi cellular, including background, locked and ordinary process termination. Force-stop reopen recovery and encrypted sender offline retry were observed separately. See [the M3 plan](notification-sync-m3-plan.md) and [QA checklist](notification-sync-m3-qa.md) for evidence and remaining checks. LAN remains selectable; native sender capture without JS is still unimplemented. Receiver force-stop requires reopening.
 
 **M0 is complete** (2026-08-12). The Kotlin `NotificationListenerService` captures on a real Samsung A52 and hands notifications to JS, verified against live WhatsApp and Gmail traffic rather than synthetic ones.
 
@@ -92,4 +96,4 @@ Every change to this project is recorded in [CHANGELOG.md](CHANGELOG.md) in the 
 
 ## Git
 
-Do not run `git commit` or `git push` in this repository, including when asked directly. Write out the exact command in a copyable block and hand it to Effie to run. Reading and staging (`add`, `status`, `diff`, `log`, `show`, `branch`) are fine.
+Do not run `git commit` or `git push` in this repository, including when asked directly. Write out the exact command in a copyable block and hand it to Effie to run. Read-only Git inspection is fine; stage only when the owner explicitly requests it.

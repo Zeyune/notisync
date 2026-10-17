@@ -2,7 +2,26 @@
 
 **Status:** approved 2026-09-13. Companion to [notification-sync-prd.md](notification-sync-prd.md), which remains the source of truth for every FR and open question. Where this document and the PRD disagree, the PRD wins unless this document says explicitly that it supersedes it.
 
+**Continuation checkpoint — 2026-10-17, approximately 01:34–01:41 +08:00 (owner-reported):** FR-17 Revised Method A was approved but never executed, including its dry run, because Claude reached its weekly usage limit. [PROJECT_STATUS.md](PROJECT_STATUS.md) records the exact stopping point, immediate next task and owner prerequisites. It supersedes the older pending-approval wording below; M3.4 and real-device fetch verification remain open. Reconfirm production-monitoring authorization and scope before attaching on resumption.
+
 **Verified update — 2026-10-11:** **M3.3 is complete; M3.4 reliability measurement remains open.** Actual Samsung capture reached Xiaomi through the deployed relay on separate networks: Samsung validated Wi-Fi → Xiaomi validated cellular, as approved by the user because Samsung has no mobile data. The receiver passed background, locked and ordinary-process-termination cases with user-confirmed native notifications and relay deletion after ack. Force-stop recovery was tested separately. Both phones retain registered identities and paired directional keys. Samsung must remain foregrounded for current sender capture. See [the real-device QA record and checklist](notification-sync-m3-qa.md) and the latest changelog for evidence and remaining checks.
+
+**Verified update — 2026-10-17:** **The M3.4 20-notification burst ran; M3.4 remains open.**
+
+- Genuine Samsung capture reached the Xiaomi, locked on mobile data: 21 of 21 delivered and displayed (one preflight plus 20). There were no duplicates or sequence gaps, pending ack was 0, the sender outbox was empty and relay pending returned to 0.
+- Capture to Android post took a median 4.25 s (2.93–5.70 s, ±0.15 s).
+- The burst's visibility criterion **failed**: HyperOS's per-app notification-count limiter removed the nine oldest delivered notifications from the shade, leaving 12 of 21 visible.
+
+See [the burst record](notification-sync-m3-qa.md#m34-burst-test--2026-10-17) for evidence, per-criterion results and what is verified versus inferred.
+
+**Verified update — 2026-10-17, later:** the first FR-17 fetch-path attempt delivered inline, so **the fetch path was not exercised**.
+
+- Android truncated the synthetic 2,400-character body to 1,024 characters before capture. The sealed payload was 1,696 base64 characters, under the relay's 2,800-character inline limit.
+- Monitoring the relay showed no `GET /blob`.
+- Inline delivery passed: captured, accepted (202), authenticated, displayed exactly once, acknowledged (200), relay 0, pending ack 0, sequence gaps 0.
+- A revised method awaits approval: a 1,024-character ASCII title plus a 1,024-character body, predicted at 3,040–3,044 base64 characters.
+
+See [the attempt record](notification-sync-m3-qa.md#fr-17-fetch-path-attempt--2026-10-17) and [the open findings](notification-sync-m3-qa.md#open-findings), none of which is resolved.
 
 ### Code audit and change plan (before implementation, 2026-10-11)
 
@@ -42,9 +61,28 @@ During force-stop, the process was absent with `stopped=true`, no new receiver e
 
 Earlier PowerShell capture commands shortened multiword titles to `M3` and bodies to case suffixes. Those captured notifications arrived, but historical claims of their full literal title/body are superseded by this correction. Repeatable QA now passes one quoted Android command to `adb shell`. A large synthetic notification was visible at 17:37:25, but its actual wire size and inline-versus-fetch route were not recorded: real-device fetch-only proof remains pending. The final user observation and Xiaomi UI agree on **queued 0, pending ack 0, sequence gaps 0**; D1 pending is 0. The implementation logs fixed outcomes, without notification plaintext, secret keys or sensitive tokens. Forwarding was left off on both phones.
 
-**Remaining work:** M3.4 calibrated latency/burst/soak measurement; real-device fetch-only route; blocked permission/channel recovery; natural token rotation; ack-network failure; LAN regression with a matching development peer; production cron observation. Native sender capture without JS, autonomous token-upload/retry workers and receipt compaction remain unimplemented.
+**Remaining work (updated 2026-10-17):**
 
-**Exact next manual test:** keep Samsung foregrounded on Wi-Fi and Xiaomi locked on cellular. Enable Samsung forwarding, post 20 uniquely numbered synthetic notifications using the [copyable QA loop](notification-sync-m3-qa.md#exact-next-manual-test), then disable forwarding. Observe all 20 native entries, zero pending acks/gaps and D1 pending 0; record timestamps and duplicates before marking burst reliability verified.
+- Real-device fetch-only route: one attempt on 2026-10-17 ran inline; a revised method awaits approval.
+- Cold-start burst.
+- Soak, and sustained-load FCM priority.
+- Blocked permission/channel recovery.
+- Natural token rotation.
+- Ack-network failure.
+- LAN regression with a matching development peer.
+- Production cron observation.
+- A product decision on HyperOS's per-app shade limit (PRD §12 Q10).
+- The catch-up diagnostic that is never cleared on success.
+
+The 20-notification burst and calibrated burst latency are done. Native sender capture without JS, autonomous token-upload/retry workers and receipt compaction remain unimplemented.
+
+**Exact next manual test (updated again 2026-10-17; pending approval):** FR-17's fetch-only route, revised Method A.
+
+- Dry-run the notification with forwarding off, and confirm Android stores a 1,024-character title and a 1,024-character body.
+- Then forward one genuine capture whose sealed payload is predicted at 3,040–3,044 base64 characters.
+- Show `GET /blob` 200, a single display and `POST /ack` 200.
+
+See [the revised steps](notification-sync-m3-qa.md#fr-17-revised-method-a). The earlier 2,400-character-body procedure is superseded: Android truncates notification text to 1,024 characters.
 
 ## Context
 
@@ -134,6 +172,11 @@ The baseline test is **Samsung and Xiaomi on independent internet connections, r
 - Confirm FR-26 sequence continuity across the relay
 - Confirm FR-32: the blob is deleted after acknowledgement
 - Measure delivery latency, and whether FCM deprioritises under a burst
+- **Burst result, 2026-10-17:**
+  - FR-26 continuity held across sequences 22–42, and FR-32 deletion held.
+  - Latency: median 4.25 s from capture to Android post, growing about 0.15 s per queued notification because the receiver handles one at a time.
+  - No FCM deprioritisation was observed in one burst of 20; sustained load is untested.
+  - HyperOS kept only the 12 newest NotifSync notifications in the shade, so "all 20 visible" failed.
 
 ---
 
@@ -163,7 +206,7 @@ The baseline test is **Samsung and Xiaomi on independent internet connections, r
 
 1. **A Firebase project**, with `com.zeyune.notifsync` registered as an Android app. It is a web console and cannot be automated from here.
 2. **A Cloudflare account** for `wrangler deploy` (free tier).
-3. Both phones, and independent internet connections for M3.4. These requirements are now met: Samsung Wi-Fi and Xiaomi mobile data. The next human interaction is the locked 20-notification burst described above.
+3. Both phones, and independent internet connections for M3.4. These requirements are now met: Samsung Wi-Fi and Xiaomi mobile data. The locked 20-notification burst ran on 2026-10-17; the next human interaction is the fetch-only route test described above.
 
 ---
 

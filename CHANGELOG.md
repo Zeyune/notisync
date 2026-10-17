@@ -1,3 +1,159 @@
+## 2026-10-17
+
+### Consolidate project-status guidance and clarify historical continuation wording
+**Type:** Changed
+**Time:** 02:30 +08:00
+**Files:** `AGENTS.md`, `CLAUDE.md`, `app/AGENTS.md`, `PROJECT_STATUS.md`, `notification-sync-m3-qa.md`, `notification-sync-m3-plan.md`, `CHANGELOG.md`
+**Related:** dynamic project status, §10 M3.4, FR-17
+
+Kept the full dynamic status procedure in `AGENTS.md` and shortened the Claude/app/checkpoint references. Removed redundant maintenance instructions and wording that could make Method A permanently next. Marked the Claude milestone summary as dated, gave app guidance one top-level heading, and aligned the Git guidance in `CLAUDE.md` with owner-requested staging only. Consolidated the QA approval/interruption note under the historically labelled Method A procedure and updated both incoming procedure links. No test result, product decision or historical date changed.
+
+**Why:** the owner requested a minimal final consistency cleanup after the checkpoint and dynamic-status updates, preserving October 17's stopping point while requiring current evidence to determine future work.
+
+**Not verified:** live phones, production state or any new Method A execution. Local review found the same `main` HEAD (`6138c0f`), documentation-only tracked changes, and no newer execution evidence in the reviewed records. The existing checkpoint remains supported as the last documented state, not a fresh device verification. Documentation references and the Git diff were checked; no application code, tests, device operations, staging, commits, pushes or deployments were performed.
+
+### Require current-evidence reconciliation before every project status or continuation answer
+**Type:** Changed
+**Time:** 01:55 +08:00
+**Files:** `AGENTS.md`, `CLAUDE.md`, `app/AGENTS.md`, `PROJECT_STATUS.md`, `notification-sync-m3-qa.md`, `CHANGELOG.md`
+**Related:** project status maintenance, §10 M3.4, FR-17
+
+Made `AGENTS.md` the shared procedure for reconciling the last documented checkpoint with current Git history, working-tree changes, recent changelog/QA/plans, relevant implementation/tests and recorded results. Claude and app-level guidance require the same procedure. Missing handoffs must not hide later progress; implementation and verification must be assessed separately, and completed, verified, unfinished, blocked and unknown work must be distinguished. The actual next task comes from current evidence, with uncertainty reported when that evidence is insufficient.
+
+Explicitly superseded the previous entry's characterization of `PROJECT_STATUS.md` as authoritative and the checkpoint's instruction to recommend Method A by default. Its October 17 milestone, results, dates, stopping point and proposed procedure remain recorded; no newer Method A result was found in the inspected repository evidence. Added a latest-checkpoint pointer and instructions to append dated updates after milestone changes, QA results, implementation work and important decisions, preserving earlier checkpoints and test history. The QA pointer now describes the last documented stopping point rather than automatically authoritative status.
+
+**Why:** the owner requires future Claude and Codex sessions to recover current status even when development occurred without a formal handoff, and to avoid repeating completed work because a checkpoint is stale.
+
+**Not verified:** live device/relay state or any new FR-17 execution; test definitions were inspected, not run. The review found the same HEAD (`6138c0f`) and documentation-only tracked changes. This is a status-policy update, not new application progress or QA evidence. No application features, tests, device operations, production access, staging, commits or pushes were performed.
+
+### Preserve the M3.4 checkpoint and cross-session AI handoff
+**Type:** Added
+**Time:** 01:46 +08:00
+**Files:** `PROJECT_STATUS.md`, `AGENTS.md`, `CLAUDE.md`, `app/AGENTS.md`, `notification-sync-m3-qa.md`, `notification-sync-m3-plan.md`, `CHANGELOG.md`
+**Related:** FR-17, FR-26, FR-32, FR-33, §10 M3.4, §12 Q10
+
+Created one authoritative continuation checkpoint and permanent Claude/Codex reading instructions, including sessions started in `app/`. The owner reports stopping at approximately 01:34–01:41 +08:00 after submitting “APPROVED — Proceed with FR-17 Revised Method A.” Claude's weekly usage limit intervened before the dry run or test; no Method A results or implementation changes followed. The revised test's approved read-only tail never started, and the owner requires reconfirming monitoring authorization/scope before attaching on resumption.
+
+Added short continuation notes to the QA record and plan, explicitly superseding their older pending-approval wording while preserving every existing result and changelog entry. The checkpoint retains the burst's 21/21 delivery pass and 12/21 shade-visibility failure, the FR-17 inline-only outcome, all open findings and remaining work. It also flags the manual-pairing/QR scope distinction, stale summary wording and the PRD Q10 timing discrepancy against the detailed QA table. Q10 remains open; in-app history is only a preliminary preference. The immediate next task is Method A, beginning with readiness checks and the forwarding-off dry run, and future sessions must update that task after actual progress.
+
+**Why:** the owner requested a durable stopping point that survives Claude/Codex session resets without treating submitted approval as execution, losing uncommitted QA evidence or restarting from an obsolete next task.
+
+**Not verified:** the prior Claude conversation and usage-limit event beyond the owner's report; current device/relay state; Method A's title/body preservation, payload-size prediction and separate fetch path. This session reviewed local repository evidence and changed documentation only. No tests, phone operations, production access, deployments, dependency installs, source-code changes, staging, commits or pushes were performed. Existing uncommitted work was preserved.
+
+### Add PRD §12 Q10: delivered notifications trimmed from the shade by the receiving OS
+**Type:** Added
+**Time:** 01:23 +08:00
+**Files:** `notification-sync-prd.md`
+**Related:** §12 Q10, FR-19, FR-20, FR-21, FR-26, FR-29, FR-32, §1.1, §7, PRD v0.9
+
+Added open question Q10, the next free number, and a v0.9 revision-history entry. Q10 records:
+
+- **The HyperOS observation.** At most 12 NotifSync notifications stay in the shade; nine of 21 delivered burst notifications were removed unseen.
+- **Android's 1,024-character display cap.**
+- **Three options analysed** for advantages, disadvantages, Android compatibility and user experience: (a) a summary notification, (b) per-app coalescing, and (c) bringing FR-21's in-app history forward from M6, plus a combination of (c) with a minimal (a).
+- **Effie's preliminary preference for in-app history,** explicitly not a decision.
+
+The analysis names a requirement history would bring: excluding it from Android backup, since the installed package carries `ALLOW_BACKUP` (read from `dumpsys package` on the Xiaomi). No FR changed meaning, and none were added or renumbered.
+
+**Why:** delivery and acknowledgement succeeded for every burst notification, so nothing in the transport layer reports this loss. The user still never saw nine of them. Under §1.1's financial use case, that is the failure the product exists to prevent. Where a notification lives after the shade is a product call; FR-21 currently schedules it for M6. The user asked for it to be documented as an open question with the options weighed, not implemented or decided.
+
+**Not verified:**
+
+- The limit's generality beyond one device, build and channel.
+- Whether HyperOS counts group summaries separately.
+- AOSP's update rate limit, cited from platform source rather than measured.
+- Whether One UI has a similar limit.
+- All option trade-offs; they are analysis, not prototypes.
+
+The PRD header still reads "Draft v0.5". It was left unchanged, as by the v0.6–v0.8 revisions before this one.
+
+### Record eight open M3.4 findings, none resolved
+**Type:** Added
+**Time:** 01:22 +08:00
+**Files:** `notification-sync-m3-qa.md`
+**Related:** FR-10, FR-17, FR-19, FR-21, FR-24, FR-33, §12 Q10, §10 M3.4
+
+Added an "Open findings" section to the QA record. It lists eight issues surfaced by the burst and FR-17 runs, each with its evidence and what is verified versus inferred:
+
+1. HyperOS's 12-per-app shade limit (now PRD §12 Q10).
+2. Sequential receiver processing, which makes latency grow under a burst.
+3. The stale catch-up diagnostic, which `recover()` never clears on success.
+4. HyperOS `LockScreenClean` killing the locked receiver.
+5. OS alert suppression during bursts.
+6. Android's 1,024-character text cap, verified at capture on the Samsung and at display on the Xiaomi.
+7. Test forwarding windows picking up real notifications until M4's FR-10 filtering exists.
+8. Cloudflare's tail redacting `x-device-key`, so relay logs cannot attribute a request to a device.
+
+**Why:** the user asked that these be recorded as findings rather than silently treated as resolved. Several sit between milestones: diagnostics (M5), history (M6) and filtering (M4). Without one register, each would be rediscovered by the next test, or mistaken for a pipeline failure. Finding 3 gained direct evidence during this session: the relay log showed catch-up polls returning 200 while the Samsung's screen still reported failure.
+
+**Not verified:** that the 200 `/pending` polls came from the Samsung (inferred from the 15-second foreground timer, because the Xiaomi was locked); the cause of finding 2; whether finding 4 is ever a force-stop; the generality of finding 1 beyond one device and build.
+
+### Record the FR-17 fetch-path attempt (inline only) and correct the wrong test procedure
+**Type:** Fixed
+**Time:** 01:22 +08:00
+**Files:** `notification-sync-m3-qa.md`, `notification-sync-m3-plan.md`
+**Related:** FR-17, FR-32, §10 M3.4
+
+Ran one controlled FR-17 test at 01:05: genuine capture on the Samsung on Wi-Fi, receiver Xiaomi locked on cellular. The relay was monitored through a read-only `wrangler tail`, with the user's approval for this test only. The tail was filtered to time, method, masked path, status and POST length, and was stopped as soon as the ack appeared; two leftover `wrangler` processes were terminated.
+
+Results:
+
+- **Inline delivery passed.** Captured, `/send` 202, authenticated decrypt, Android posted sequence 44 exactly once, `/ack` 200, relay 0 blobs, Xiaomi pending ack 0 and sequence gaps 0, Samsung outbox 0.
+- **Latency:** 0.74 s from capture to Android post; 0.65 s from relay `/send` to `/ack`.
+- **The fetch path was NOT EXERCISED.** Android stored the 2,400-character synthetic body as 1,024 characters (`android.text=String [length=1024]` on the Samsung). The sealed payload was therefore 1,696 base64 characters (`content-length` 1,768 − 72), under the 2,800 inline limit, and no `GET /blob` occurred.
+- **A non-test, charging-related notification** captured 1.1 s into the forwarding window was forwarded as sequence 43; its content was not read.
+- **The test was not repeated,** per the user's instruction.
+
+Replaced the QA doc's "Exact next manual test" and updated the plan's status and next-test lines. The new method, Method A, is pending approval and not executed: a dry run with forwarding off, then a genuine capture with a 1,024-character ASCII title and a 1,024-character body, predicted at 3,040–3,044 base64 characters.
+
+**Why:** the procedure recorded at 00:57 assumed a 2,400-character body would reach the sealed payload intact. It cannot: Android caps each notification text field at 1,024 characters. The test therefore could not reach the fetch path, and repeating it unchanged would fail the same way. Recording it as inline PASS and fetch NOT EXERCISED keeps the fetch path from being counted as verified on hardware when it still is not.
+
+**Not verified:**
+
+- Method A's prediction: it extrapolates from one measured overhead of 206 bytes (±2 for base64 padding).
+- That Android truncates the title to 1,024 characters the same way as the text; the dry run checks this.
+- That the `GET /blob` 200 in a future run comes from the Xiaomi; it rests on the relay's code, because Cloudflare redacts the device header.
+- That sequence 43's notification was charging-related; that rests on the user's observation.
+
+### Record the M3.4 20-notification burst: delivery 21/21, shade visibility 12/21 under a HyperOS limit
+**Type:** Changed
+**Time:** 00:57 +08:00
+**Files:** `notification-sync-m3-qa.md`, `notification-sync-m3-plan.md`
+**Related:** FR-17, FR-19, FR-26, FR-32, FR-33, §10 M3.4
+
+Ran the M3.4 burst on real hardware between 00:37 and 00:49. The sender was the Samsung SM-A526B on Wi-Fi with NotifSync foregrounded. The receiver was the Xiaomi 22101316UG on HyperOS OS2.0.16.0, on mobile data with Wi-Fi off, asleep and locked. The run posted one preflight notification and then 20 genuine Android notifications (`cmd notification post`, captured by `NotifSyncListenerService`) back to back, with forwarding on only for each run. The QA doc now holds the full method, per-notification timings, per-criterion results, a verified-versus-inferred analysis and the next test. The plan's status, remaining work, M3.4 section and next test now match.
+
+Results, each from receiver-side evidence rather than relay acceptance:
+
+- **Delivery passed 21/21.** There were 21 `push displayed` outcomes and no other; Android's `notification_enqueue` fired exactly once for each of sequences 22–42, in order.
+- **Ledger and relay were clean.** No duplicates and sequence gaps 0 (FR-26); Xiaomi pending ack 0; Samsung outbox 0; relay D1 0 blobs at 00:42:06 (FR-32).
+- **No errors.** 0 JavaScript warnings or errors on either phone.
+- **Latency was measured.** Capture to Android post took a median 4.25 s (2.93–5.70 s, p90 5.03 s), corrected for measured clock offsets to about ±0.15 s.
+- **Visibility failed.** HyperOS's SystemUI `CountLimitCoordinator` removed the nine oldest delivered notifications from the shade (preflight and burst-1 to burst-8), each within 4.4 s of arrival and the preflight after 73 s. Android logged each with reason 2 and exposure 0 ms, so nobody saw them. Only burst-9 to burst-20 remained, which the user confirmed by eye. The checklist's pass condition, "confirm all 20 distinct numbered entries", was therefore **not met**.
+- **Throughput was measured.** The receiver posted notifications about 0.32 s apart against captures 0.17 s apart, so each later notification waited about 0.15 s longer than the one before.
+- **Alerts were rate-limited.** Logs show the OS suppressed sound or vibration for 19 of the 20.
+
+Also observed:
+
+- HyperOS killed the locked receiver about six minutes later (`LockScreenClean`).
+- The Samsung shows a stale `catch-up: relay connection failed`: `recover()` writes that diagnostic only on failure and never clears it on success.
+
+No application code, device setting, installation or relay deployment was changed. The only device interaction beyond read-only ADB was switching Samsung forwarding on and off, plus scrolling its list to read row statuses.
+
+**Why:** M3.4 exists to measure delivery under real conditions, and the burst was its next defined test. The run separates three outcomes: what NotifSync delivered (all of it), what Android displayed (all of it), and what the user could still see. The third failed because of the phone's OS, not the pipeline. Recording it as a delivery failure would point work at a pipeline that held. Recording it as a pass would hide a product-level loss: on HyperOS, a burst of more than 12 forwarded notifications drops the oldest from view before a locked user can see them.
+
+**Not verified:**
+
+- That the limit is a fixed 12 per app; it was observed once, on one device, one build and one channel.
+- That it counts per package rather than per group or channel.
+- Whether a setting changes it.
+- That HyperOS uses reason 2 with AOSP's `REASON_CANCEL` meaning.
+- That the cellular ack round trip is what sets the 0.32 s per-notification pace.
+- That the `LockScreenClean` kill was an ordinary kill rather than a force-stop; the stopped flag wasn't read at the time.
+- A cold-start burst: the burst ran against a receiver process the preflight had already started.
+- Sustained-load FCM behaviour.
+- Alerts as heard by a person; the alert results come from logs only.
+
 ## 2026-10-11
 
 ### M3.3 verified complete: real Samsung capture displays and acknowledges on Xiaomi across networks

@@ -293,10 +293,90 @@ M0–M2 are the interesting technical risk. M5 is where the product lives or die
 9. **Product name.** Q1's precedent search surfaced a Play listing called **"Notify Sync: Secure E2E Mirror"** — same category, same end-to-end-encryption pitch, and close enough to "NotifSync" to be confused with it in store search. §1's competitor table predates this and lists only Pushbullet, Join, KDE Connect, and Tasker glue. Decide whether to rename, and refresh §1 against what is actually shipping now rather than against the options considered at v0.1. *Not verified: the listing was seen via search results, not confirmed first-party.*
 
    **Candidate: `noti-noti`.** Distinctive enough to avoid the store-search collision that motivates this question, which is the main thing being solved for. Before committing, check it against the trademark position and the availability of the matching Play package ID, domain, and store listing name — a name that collides at the package-ID or trademark level is a costlier mistake than one that collides in search results.
+10. **Delivered but unseen: the receiving OS trims the notification shade.** **Open. Raised 2026-10-17 from the M3.4 burst.**
+
+    **Observed:**
+
+    - HyperOS OS2.0.16.0 on the Redmi Note 12 Pro (Android 14) kept at most **12** NotifSync notifications in the shade.
+    - During a locked 20-notification burst, its SystemUI (`CountLimitCoordinator`) removed the nine oldest of 21 delivered notifications, each within about four seconds of arriving. Android logged each removal with exposure 0 ms: the locked user never saw them.
+    - It removed two more later that night.
+    - NotifSync delivered, displayed and acknowledged all 21, so FR-26 reports no gap and the relay deleted the ciphertext as FR-32 requires. In the current build the trimmed content is then nowhere the user can reach: FR-21's history is scheduled for M6, and the receiver persists no plaintext.
+    - Separately, Android caps notification text at 1,024 characters on both phones. A long forwarded title and body is already cut on display, with the same nowhere-to-go problem.
+
+    Evidence, and which parts are verified versus inferred, are in `notification-sync-m3-qa.md`, under "M3.4 burst test" and "Open findings".
+
+    **Question:** how should the receiver keep every forwarded notification reviewable when the operating system trims the shade or truncates long text? Transport reliability and user-visible reliability have come apart. For §1.1's payment notifications, one the user never sees is the same failure, from their side, as one that never arrived.
+
+    **Options considered, not decided:**
+
+    - **(a) Summary notification.** Post a group summary per source device (`setGroupSummary`) carrying an `InboxStyle` digest, such as "5 new from Samsung" plus the latest lines, alongside the individual notifications.
+      - *For:*
+        - It is a standard Android pattern since API 24, which is this app's `minSdk`.
+        - It gives one stable anchor in the shade even when the individual notifications are trimmed.
+        - It is a natural home for FR-20's per-device grouping and FR-26's "N did not arrive" notice.
+      - *Against:*
+        - The digest needs recent decrypted text to build its lines, which the receiver does not keep today.
+        - The expanded `InboxStyle` view shows only a handful of lines, each capped at 1,024 characters.
+        - Updating the summary on every arrival adds a native post per delivery, on a receiver that already processes deliveries one at a time.
+        - Whether HyperOS's limiter counts a summary together with its children, or trims the children regardless, is **untested**.
+      - *Android:* API 24+, through `NotificationCompat`; OEM shade handling of summaries varies and is unmeasured here.
+      - *UX:* compact and calm. The user sees that more arrived, but cannot read trimmed items beyond the digest.
+    - **(b) Grouping, by coalescing per source app.** Instead of one shade entry per forwarded notification, keep one updating notification per source device and source app, accumulating recent items with `MessagingStyle` or `InboxStyle`.
+      - *For:*
+        - The number of shade entries becomes the number of active source apps, which stays under a 12-per-app limit for most users.
+        - Fewer interruptions, matching the OS alert rate limiting already observed: the system suppressed 19 of the 20 burst alerts.
+      - *Against:*
+        - The shade loses per-notification identity: individual tap and dismiss, and the stable per-delivery tag that keeps the receiver safe across crash re-posts.
+        - `MessagingStyle` retains at most 25 messages, and `InboxStyle` shows only a few lines.
+        - Rebuilding the coalesced notification needs stored decrypted text.
+        - AOSP rate-limits enqueues for updates to an existing notification per app, so a coalesced notification updated during a burst may shed updates. This is inferred from platform source, not measured here.
+        - Older items still scroll out of the coalesced view.
+      - *Android:* API 24+, through `NotificationCompat`.
+      - *UX:* conversation-like and quiet, and closest to how messaging apps behave, but still not a complete record.
+    - **(c) Bring FR-21's in-app history forward from M6.** Persist each delivered notification locally on the receiver, with FR-21's retention setting (default 7 days) and clear-all, and list it in the app.
+      - *For:*
+        - It does not depend on any OEM's shade policy, so it also covers "clear all", accidental swipes, reboots and the 1,024-character display cut.
+        - It is already specified: FR-21, plus FR-26's history entry for gaps.
+        - It matches §7's data model, which already places decrypted `ForwardedNotification`s on the receiver.
+        - It would let acknowledgement mean "safely recorded" rather than "posted to a shade that may drop it".
+      - *Against:*
+        - The receiver would persist decrypted notification text, which today's implementation deliberately does not: it stores only ciphertext and delivery bookkeeping. That needs decisions on at-rest protection (Android file-based encryption alone, or Keystore-wrapped encryption as well) and on retention enforcement.
+        - It also needs **exclusion from Android backup.** The installed package currently carries `ALLOW_BACKUP`, which would otherwise copy financial notification history into the user's cloud backup.
+        - It does nothing for real-time awareness: a trimmed notification still never alerts, so history needs a pointer from the shade.
+        - It pulls M6 scope into M3/M4, and the privacy policy and Data Safety wording must change to match (FR-29).
+      - *Android:* no dependence on API level or OEM; local SQLite is already in use.
+      - *UX:* everything stays reviewable after the fact, but only by opening the app.
+    - **Combination:** (c) as the complete record, with a minimal (a) summary as the pointer to it ("12 newer — open NotifSync"). This keeps one visible cue without depending on the shade for completeness.
+
+    **Preliminary preference (Effie, 2026-10-17): reliable in-app history.** Users should still be able to review notifications after the operating system removes them from the shade. **This is not a decision, and nothing is implemented.**
+
+    **To measure before deciding:**
+
+    - Whether HyperOS's limit counts group children and summaries separately.
+    - Whether it applies per package, per channel or per group.
+    - Whether the Samsung's One UI imposes a limit at all.
+    - Whether coalesced updates survive a burst.
+
+    *Not verified: the limit of 12 was observed on one device, one HyperOS build and one notification channel; its generality, scope and configurability are inferred. AOSP's update rate limit is cited from platform source, not measured on these devices.*
 
 ---
 
 ## Revision history
+
+### v0.9 — 2026-10-17
+**Type:** Added
+
+Added **§12 Q10**: how forwarded notifications stay reviewable when the receiving operating system trims the notification shade or truncates long text. It records the 12-per-app limit observed on HyperOS during the M3.4 burst, analyses three options (a summary notification, per-app coalescing, and bringing FR-21's history forward from M6), and records Effie's preliminary preference for in-app history without deciding. No FR changed meaning, none were added, and none were renumbered.
+
+**Why:** the M3.4 burst exposed a loss mode the requirements did not anticipate. Every notification was delivered and acknowledged, so FR-26 reported no gap and FR-32 deleted the ciphertext. Yet nine of 21 were removed from a locked phone's shade by the operating system before the user could see them. Transport reliability and user-visible reliability have come apart, and for §1.1's financial notifications the user-visible kind is the one that matters. Android's 1,024-character text cap, verified on both phones the same night, means long notifications are already cut on display. Both point at where a forwarded notification lives after the shade, which FR-21 schedules for M6. Whether that is too late is a product call, so it is recorded as a question rather than settled by implementation.
+
+**Not verified:**
+
+- The 12 limit's generality: it was observed on one device, one HyperOS build and one channel.
+- Whether HyperOS counts group summaries and children separately.
+- AOSP's per-app rate limit on notification updates, cited from platform source rather than measured.
+- Whether the Samsung's One UI imposes any similar limit.
+- The options' trade-offs are analysis, not prototypes; none has been built or tried.
 
 ### v0.8 — 2026-09-12
 **Type:** Changed
